@@ -1,5 +1,7 @@
 # Rust KDA / Rust 玩家画像查询站
 
+[中文](./README.md) | [English](./README.en.md)
+
 Rust KDA 是一个围绕 **Rust 玩家公开数据查询** 构建的前后端项目，聚合：
 
 - `Steam Web API`：玩家资料、Rust 总时长、部分官方统计
@@ -193,4 +195,4 @@ npm run build
 
 ## 九、许可证
 
-当前仓库未附带额外许可证文件；如果你准备长期公开维护，建议补充明确的 `LICENSE`。
+当前项目基于 [MIT License](./LICENSE) 发布。
