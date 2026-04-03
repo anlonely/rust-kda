@@ -1238,6 +1238,7 @@ def get_player_kda(steam_id):
             ("wood", "木头", resources["wood"], "🪵"),
             ("stone", "石头", resources["stone"], "🧱"),
             ("metalOre", "金属矿石", resources["metalOre"], "🪨"),
+            ("sulfurOre", "硫磺矿石", resources["sulfurOre"], "💛"),
             ("scrap", "废料", resources["scrap"], "🧲"),
             ("cloth", "布", resources["cloth"], "🧶"),
             ("leather", "皮革", resources["leather"], "🧥"),
