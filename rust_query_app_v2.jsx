@@ -2,12 +2,23 @@ import { startTransition, useCallback, useEffect, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 const normalizeLang = (value) => String(value || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+const defaultCurrencyForLang = (lang) => lang === "zh" ? "CNY" : "USD";
 const detectInitialLang = () => {
   if (typeof window === "undefined") return "zh";
   const saved = window.localStorage.getItem("rust-kda-language");
   if (saved === "zh" || saved === "en") return saved;
   const browserLang = window.navigator.languages?.[0] || window.navigator.language || "en";
   return normalizeLang(browserLang);
+};
+const detectInitialCurrency = (lang) => {
+  if (typeof window === "undefined") return defaultCurrencyForLang(lang);
+  const saved = window.localStorage.getItem("rust-kda-currency");
+  if (saved === "USD" || saved === "CNY") return saved;
+  return defaultCurrencyForLang(lang);
+};
+const detectCurrencyManual = () => {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem("rust-kda-currency-manual") === "1";
 };
 const fmt = (n, locale = "en-US") => {
   if (n >= 1e6) return (n / 1e6).toLocaleString(locale, { maximumFractionDigits: 1 }) + "M";
@@ -54,6 +65,13 @@ const yearsSince = (ts, lang = "zh", locale = "zh-CN") => {
     ? `${years.toLocaleString(locale, { maximumFractionDigits: 1 })}年`
     : `${years.toLocaleString(locale, { maximumFractionDigits: 1 })} years`;
 };
+const convertMoney = (value, currency = "USD", usdToCny = null) => {
+  if (value == null) return null;
+  if (currency === "CNY" && typeof usdToCny === "number" && usdToCny > 0) {
+    return value * usdToCny;
+  }
+  return value;
+};
 
 const RC = {
   legendary:{bg:"#1a0f00",bd:"#ff9800",tx:"#ffcc80",gw:"rgba(255,152,0,.25)"},
@@ -72,6 +90,11 @@ const UI = {
     appTitle: "Rust 玩家查询工具",
     appSubtitle: "KDA · INVENTORY · PLAYTIME",
     language: "语言",
+    currency: "币种",
+    exchangeRate: "汇率",
+    usdLabel: "USD",
+    rmbLabel: "RMB",
+    rateAttribution: "汇率来源",
     queryPlaceholder: "Steam ID64 / 自定义 URL / Vanity 名称...",
     queryButton: "查询",
     querying: "正在查询数据...",
@@ -130,6 +153,7 @@ const UI = {
     openStore: "打开商城",
     chooseBmUser: "选择 BattleMetrics 用户",
     chooseBmHint: "重名时请手动确认，确认后再加载服务器时长。",
+    serversDevNotice: "开发中。暂不可用。",
     reselect: "重新选择",
     noBmCandidatesTitle: "服务器时长需要确认 BattleMetrics 用户",
     noBmCandidatesHint: "当前没有候选可选。你可以重新查询或检查 BattleMetrics Token。",
@@ -161,6 +185,11 @@ const UI = {
     appTitle: "Rust Player Query",
     appSubtitle: "KDA · INVENTORY · PLAYTIME",
     language: "Language",
+    currency: "Currency",
+    exchangeRate: "FX Rate",
+    usdLabel: "USD",
+    rmbLabel: "RMB",
+    rateAttribution: "Rates by",
     queryPlaceholder: "Steam ID64 / Custom URL / Vanity name...",
     queryButton: "Search",
     querying: "Loading player data...",
@@ -219,6 +248,7 @@ const UI = {
     openStore: "Open Store",
     chooseBmUser: "Choose a BattleMetrics User",
     chooseBmHint: "When names collide, pick the correct profile first, then load server playtime.",
+    serversDevNotice: "In development. Temporarily unavailable.",
     reselect: "Choose Again",
     noBmCandidatesTitle: "Server playtime needs a BattleMetrics identity",
     noBmCandidatesHint: "No candidates are available right now. Re-run the query or check the BattleMetrics token.",
@@ -407,7 +437,7 @@ const DEMO = {
 function StatCard({icon,label,value,color}) {
   const [h,setH]=useState(false);
   return (
-    <div onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)} style={{background:h?`${color}0d`:"rgba(255,255,255,.025)",borderRadius:14,padding:"16px 14px",textAlign:"center",border:`1px solid ${h?color+"44":"rgba(255,255,255,.04)"}`,transition:"all .25s",cursor:"default",position:"relative",overflow:"hidden",minHeight:118}}>
+    <div className="neon-card neon-card-interactive" onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)} style={{background:h?`${color}0d`:"rgba(255,255,255,.025)",borderRadius:14,padding:"16px 14px",textAlign:"center",border:`1px solid ${h?color+"44":"rgba(255,255,255,.04)"}`,transition:"all .25s",cursor:"default",position:"relative",overflow:"hidden",minHeight:118}}>
       {h&&<div style={{position:"absolute",inset:0,background:`radial-gradient(circle at 50% 0%,${color}15,transparent 70%)`}}/>}
       <div style={{position:"relative"}}>
         <div style={{fontSize:20,marginBottom:6}}>{icon}</div>
@@ -418,18 +448,18 @@ function StatCard({icon,label,value,color}) {
   );
 }
 function MiniStat({icon,label,value}) {
-  return (<div style={{background:"rgba(255,255,255,.02)",borderRadius:10,padding:"12px 10px",border:"1px solid rgba(255,255,255,.04)",textAlign:"center",minHeight:84}}><div style={{fontSize:16,marginBottom:4}}>{icon}</div><div style={{fontSize:"clamp(14px,1.6vw,18px)",fontWeight:700,color:"#b0bec5",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.2}}>{value}</div><div style={{fontSize:10,color:"#546e7a",marginTop:6,lineHeight:1.35}}>{label}</div></div>);
+  return (<div className="neon-card neon-mini-card neon-card-interactive" style={{background:"rgba(255,255,255,.02)",borderRadius:10,padding:"12px 10px",border:"1px solid rgba(255,255,255,.04)",textAlign:"center",minHeight:84}}><div style={{fontSize:16,marginBottom:4}}>{icon}</div><div style={{fontSize:"clamp(14px,1.6vw,18px)",fontWeight:700,color:"#b0bec5",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.2}}>{value}</div><div style={{fontSize:10,color:"#546e7a",marginTop:6,lineHeight:1.35}}>{label}</div></div>);
 }
 function SectionTitle({emoji,title}) {
   return <div style={{fontSize:13,fontWeight:600,color:"#90a4ae",marginBottom:10,letterSpacing:1,display:"flex",alignItems:"center",gap:6}}><span>{emoji}</span>{title}</div>;
 }
 function ErrorBox({msg}) {
-  return <div style={{padding:"20px 24px",borderRadius:14,background:"rgba(239,83,80,.06)",border:"1px solid rgba(239,83,80,.15)",color:"#ef9a9a",fontSize:13,textAlign:"center"}}><div style={{fontSize:28,marginBottom:8}}>⚠️</div>{msg}</div>;
+  return <div className="neon-card" style={{padding:"20px 24px",borderRadius:14,background:"rgba(239,83,80,.06)",border:"1px solid rgba(239,83,80,.15)",color:"#ef9a9a",fontSize:13,textAlign:"center"}}><div style={{fontSize:28,marginBottom:8}}>⚠️</div>{msg}</div>;
 }
 
 function SectionMetric({item,accent,formatValue=fmtMetric}) {
   return (
-    <div style={{padding:"12px 12px 10px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)",minHeight:88}}>
+    <div className="neon-card neon-card-interactive neon-metric-card" style={{padding:"12px 12px 10px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)",minHeight:88}}>
       <div style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:8}}>
         <span style={{fontSize:16}}>{item.icon||"•"}</span>
         <span style={{fontSize:11,color:"#78909c",lineHeight:1.35,overflowWrap:"anywhere"}}>{item.label}</span>
@@ -446,7 +476,7 @@ function StatsSection({section, layout="grid", formatValue=fmtMetric}) {
       ? "repeat(auto-fit,minmax(150px,1fr))"
       : "repeat(auto-fit,minmax(140px,1fr))";
   return (
-    <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"18px 18px 16px",border:"1px solid rgba(255,255,255,.05)"}}>
+    <div className="neon-panel" style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"18px 18px 16px",border:"1px solid rgba(255,255,255,.05)"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:16}}>{section.emoji}</span>
@@ -464,7 +494,7 @@ function StatsSection({section, layout="grid", formatValue=fmtMetric}) {
   );
 }
 
-function KdaProfileCard({player,inventory,servers,summary,lang,locale,t}) {
+function KdaProfileCard({player,inventory,servers,summary,lang,locale,t,formatMoneyValue}) {
   const totalValue = inventory?.totalSummary?.totalValue;
   const serverHours = servers?.summary?.totalHours;
   const score = Math.min(100, Math.round(
@@ -476,9 +506,9 @@ function KdaProfileCard({player,inventory,servers,summary,lang,locale,t}) {
   ));
 
   return (
-    <div style={{background:"linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.015))",borderRadius:18,padding:"20px",border:"1px solid rgba(255,255,255,.05)",display:"flex",flexDirection:"column",gap:14}}>
+    <div className="neon-panel neon-panel-ember" style={{background:"linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.015))",borderRadius:18,padding:"20px",border:"1px solid rgba(255,255,255,.05)",display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
-        {player?.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:62,height:62,borderRadius:16,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:62,height:62,borderRadius:16,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,fontWeight:800,color:"#fff"}}>{player?.name?.[0]?.toUpperCase()||"?"}</div>}
+        {player?.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:62,height:62,borderRadius:16,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:62,height:62,borderRadius:16,background:"linear-gradient(135deg,#00e5ff,#7c4dff)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,fontWeight:800,color:"#fff"}}>{player?.name?.[0]?.toUpperCase()||"?"}</div>}
         <div style={{minWidth:0}}>
           <div style={{fontSize:"clamp(17px,2vw,21px)",fontWeight:800,color:"#eceff1",overflowWrap:"anywhere"}}>{player?.name || (lang === "zh" ? "玩家画像" : "Player Profile")}</div>
           <div style={{fontSize:11,color:"#546e7a",fontFamily:"'JetBrains Mono',monospace",overflowWrap:"anywhere"}}>{player?.steamId||"—"}</div>
@@ -486,21 +516,21 @@ function KdaProfileCard({player,inventory,servers,summary,lang,locale,t}) {
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10}}>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(66,165,245,.08)",border:"1px solid rgba(66,165,245,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("rustHours")}</div><div style={{fontSize:20,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeHours, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,193,7,.08)",border:"1px solid rgba(255,193,7,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentTwoWeeks")}</div><div style={{fontSize:20,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeTwoWeeksHours, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(239,83,80,.08)",border:"1px solid rgba(239,83,80,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("unlockedAchievements")}</div><div style={{fontSize:20,fontWeight:800,color:"#ef5350",fontFamily:"'JetBrains Mono',monospace"}}>{fmtFull(player?.achievementsCount, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(102,187,106,.08)",border:"1px solid rgba(102,187,106,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("inventoryValue")}</div><div style={{fontSize:20,fontWeight:800,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(totalValue, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(171,71,188,.08)",border:"1px solid rgba(171,71,188,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("serverPlaytime")}</div><div style={{fontSize:20,fontWeight:800,color:"#ce93d8",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(serverHours, lang, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(121,134,203,.08)",border:"1px solid rgba(121,134,203,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("accountAge")}</div><div style={{fontSize:20,fontWeight:800,color:"#9fa8da",fontFamily:"'JetBrains Mono',monospace"}}>{yearsSince(player?.created, lang, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(66,165,245,.08)",border:"1px solid rgba(66,165,245,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("rustHours")}</div><div style={{fontSize:20,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeHours, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(255,193,7,.08)",border:"1px solid rgba(255,193,7,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentTwoWeeks")}</div><div style={{fontSize:20,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeTwoWeeksHours, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(239,83,80,.08)",border:"1px solid rgba(239,83,80,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("unlockedAchievements")}</div><div style={{fontSize:20,fontWeight:800,color:"#ef5350",fontFamily:"'JetBrains Mono',monospace"}}>{fmtFull(player?.achievementsCount, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(102,187,106,.08)",border:"1px solid rgba(102,187,106,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("inventoryValue")}</div><div style={{fontSize:20,fontWeight:800,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{formatMoneyValue(totalValue)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(171,71,188,.08)",border:"1px solid rgba(171,71,188,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("serverPlaytime")}</div><div style={{fontSize:20,fontWeight:800,color:"#ce93d8",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(serverHours, lang, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(121,134,203,.08)",border:"1px solid rgba(121,134,203,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("accountAge")}</div><div style={{fontSize:20,fontWeight:800,color:"#9fa8da",fontFamily:"'JetBrains Mono',monospace"}}>{yearsSince(player?.created, lang, locale)}</div></div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentActive")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35,overflowWrap:"anywhere"}}>{fmtDateTime(player?.lastLogoffAt||player?.lastLogoff, locale)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("profileOverview")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35}}>{t("profileOverviewValue")}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentActive")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35,overflowWrap:"anywhere"}}>{fmtDateTime(player?.lastLogoffAt||player?.lastLogoff, locale)}</div></div>
+        <div className="neon-card neon-card-interactive" style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("profileOverview")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35}}>{t("profileOverviewValue")}</div></div>
       </div>
-      <div style={{padding:"14px 16px",borderRadius:14,background:"linear-gradient(135deg,rgba(205,65,43,.12),rgba(255,193,7,.06))",border:"1px solid rgba(205,65,43,.18)"}}>
+      <div className="neon-card neon-card-interactive" style={{padding:"14px 16px",borderRadius:14,background:"linear-gradient(135deg,rgba(0,229,255,.12),rgba(124,77,255,.12))",border:"1px solid rgba(0,229,255,.16)"}}>
         <div style={{fontSize:10,color:"#78909c",letterSpacing:1.4,textTransform:"uppercase",marginBottom:6}}>{t("compositeScore")}</div>
         <div style={{display:"flex",alignItems:"baseline",gap:10}}>
-          <div style={{fontSize:34,fontWeight:900,color:"#ff7043",fontFamily:"'JetBrains Mono',monospace"}}>{score}</div>
+          <div style={{fontSize:34,fontWeight:900,color:"#6ef7ff",fontFamily:"'JetBrains Mono',monospace"}}>{score}</div>
           <div style={{fontSize:12,color:"#b0bec5"}}>/ 100</div>
         </div>
         <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>{t("compositeScoreNote")}</div>
@@ -510,7 +540,7 @@ function KdaProfileCard({player,inventory,servers,summary,lang,locale,t}) {
 }
 
 // ─── KDA Panel ───
-function KDAPanel({data,player,inventory,servers,lang,locale,t}) {
+function KDAPanel({data,player,inventory,servers,lang,locale,t,formatMoneyValue}) {
   if(data.error) return <ErrorBox msg={data.error}/>;
   const s=data.summary;
   const kc=s.kdRatio>=3?"#66bb6a":s.kdRatio>=1.5?"#ffa726":"#ef5350";
@@ -531,8 +561,8 @@ function KDAPanel({data,player,inventory,servers,lang,locale,t}) {
   return (
     <div style={{animation:"fadeIn .5s ease"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(360px,1fr))",gap:16,marginBottom:18,alignItems:"stretch"}}>
-        <KdaProfileCard player={player} inventory={inventory} servers={servers} summary={s} lang={lang} locale={locale} t={t}/>
-        <div style={{background:`linear-gradient(135deg,${kc}12,rgba(30,30,50,.4))`,borderRadius:18,padding:"24px 28px",border:`1px solid ${kc}22`,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+        <KdaProfileCard player={player} inventory={inventory} servers={servers} summary={s} lang={lang} locale={locale} t={t} formatMoneyValue={formatMoneyValue}/>
+        <div className="neon-panel neon-panel-accent" style={{background:`linear-gradient(135deg,${kc}12,rgba(30,30,50,.4))`,borderRadius:18,padding:"24px 28px",border:`1px solid ${kc}22`,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:22,flexWrap:"wrap"}}>
             <div style={{position:"relative",width:80,height:80}}>
               <svg viewBox="0 0 80 80" style={{transform:"rotate(-90deg)"}}><circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,.04)" strokeWidth="6"/><circle cx="40" cy="40" r="34" fill="none" stroke={kc} strokeWidth="6" strokeDasharray={`${Math.min(s.kdRatio/5,1)*213.6} 213.6`} strokeLinecap="round"/></svg>
@@ -562,7 +592,7 @@ function KDAPanel({data,player,inventory,servers,lang,locale,t}) {
           </div>
         </div>
       </div>
-      <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"16px 18px",border:"1px solid rgba(255,255,255,.05)",marginBottom:18}}>
+      <div className="neon-panel" style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"16px 18px",border:"1px solid rgba(255,255,255,.05)",marginBottom:18}}>
         <SectionTitle emoji="📌" title={t("combatOverview")}/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8}}>
           {[
@@ -587,7 +617,7 @@ function KDAPanel({data,player,inventory,servers,lang,locale,t}) {
 // ═══════════════════════════════════════════════════
 //  库存面板
 // ═══════════════════════════════════════════════════
-function InventoryPanel({data,lang,locale,t}) {
+function InventoryPanel({data,lang,locale,t,formatMoneyValue}) {
   if(data.error) return <ErrorBox msg={data.error}/>;
   const [view,setView]=useState("all"); // all | steamOnly | store
   const [sortBy,setSortBy]=useState("price");
@@ -597,31 +627,30 @@ function InventoryPanel({data,lang,locale,t}) {
   const storeSummary=data.storeSummary||{};
   const skins=data.skins||[];
   const storeCatalog=data.storeCatalog||[];
+  const matchedStore=storeCatalog.filter((item)=>item.owned);
   const filteredSkins=skins.filter((item)=>view==="steamOnly"?!String(item.source||"").includes("scmm"):true);
   const sortedSkins=[...filteredSkins].sort((a,b)=>sortBy==="name"?pickDisplayName(a, lang).localeCompare(pickDisplayName(b, lang), locale):(b.price||0)-(a.price||0));
-  const sortedStore=[...storeCatalog].sort((a,b)=>{
-    const ownedDelta=Number(Boolean(b.owned))-Number(Boolean(a.owned));
-    if(ownedDelta) return ownedDelta;
+  const sortedStore=[...matchedStore].sort((a,b)=>{
     return pickDisplayName(a, lang).localeCompare(pickDisplayName(b, lang), locale);
   });
 
   return (
     <div style={{animation:"fadeIn .5s ease"}}>
       {/* ── 总价值 Hero ── */}
-      <div style={{background:"linear-gradient(135deg,rgba(255,193,7,.08),rgba(30,30,50,.4))",borderRadius:18,padding:"22px 26px",marginBottom:18,border:"1px solid rgba(255,193,7,.12)"}}>
+      <div className="neon-panel neon-panel-gold" style={{background:"linear-gradient(135deg,rgba(0,229,255,.10),rgba(124,77,255,.14))",borderRadius:18,padding:"22px 26px",marginBottom:18,border:"1px solid rgba(0,229,255,.14)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:14,flexWrap:"wrap",gap:12}}>
           <div>
             <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>{t("totalAssetValue")}</div>
-            <div style={{fontSize:"clamp(30px,4vw,44px)",fontWeight:900,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.totalValue, locale)}</div>
+            <div style={{fontSize:"clamp(30px,4vw,44px)",fontWeight:900,color:"#6ef7ff",fontFamily:"'JetBrains Mono',monospace"}}>{formatMoneyValue(ts.totalValue)}</div>
           </div>
           <div style={{display:"flex",gap:18,flexWrap:"wrap",justifyContent:"flex-end"}}>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:11,color:"#78909c"}}>{t("tradable")}</div>
-              <div style={{fontSize:18,fontWeight:700,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.tradableValue, locale)}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{formatMoneyValue(ts.tradableValue)}</div>
             </div>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:11,color:"#78909c"}}>{t("storeOwnedValue")}</div>
-              <div style={{fontSize:18,fontWeight:700,color:"#ab47bc",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(storeSummary.ownedValue, locale)}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#ab47bc",fontFamily:"'JetBrains Mono',monospace"}}>{formatMoneyValue(storeSummary.ownedValue)}</div>
             </div>
           </div>
         </div>
@@ -637,11 +666,11 @@ function InventoryPanel({data,lang,locale,t}) {
         )}
         {/* Value breakdown */}
         <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-          <ValueChip label={t("inventoryWorth")} value={fmtMoney(ts.skinsValue, locale)} color="#ffa726" count={lang==="zh"?`${fmtFull(ss.totalItems||0, locale)}件 / ${fmtFull(ss.distinctItems||0, locale)}种`:`${fmtFull(ss.totalItems||0, locale)} items / ${fmtFull(ss.distinctItems||0, locale)} unique`}/>
+          <ValueChip label={t("inventoryWorth")} value={formatMoneyValue(ts.skinsValue)} color="#6ef7ff" count={lang==="zh"?`${fmtFull(ss.totalItems||0, locale)}件 / ${fmtFull(ss.distinctItems||0, locale)}种`:`${fmtFull(ss.totalItems||0, locale)} items / ${fmtFull(ss.distinctItems||0, locale)} unique`}/>
           <ValueChip label={t("steamWebOnly")} value={fmtFull(ss.steamWebOnlyDistinct||0, locale)} color="#42a5f5" count={lang==="zh"?`${fmtFull(ss.steamWebOnlyItems||0, locale)}件`:`${fmtFull(ss.steamWebOnlyItems||0, locale)} items`}/>
           <ValueChip label={t("scmmPriced")} value={fmtFull(ss.pricedByScmmDistinct||0, locale)} color="#66bb6a" count={lang==="zh"?`${fmtFull(ss.pricedByScmmItems||0, locale)}件`:`${fmtFull(ss.pricedByScmmItems||0, locale)} items`}/>
-          <ValueChip label={t("currentStore")} value={fmtFull(storeSummary.totalItems||0, locale)} color="#ab47bc" count={lang==="zh"?`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)} 项`:`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)}`}/>
-          <ValueChip label={t("nonTradableValue")} value={fmtMoney(storeSummary.ownedValue, locale)} color="#8e24aa" count={t("currentStoreMatched")}/>
+          <ValueChip label={t("currentStore")} value={fmtFull(storeSummary.ownedCount||0, locale)} color="#ab47bc" count={lang==="zh"?`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)} 项`:`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)}`}/>
+          <ValueChip label={t("nonTradableValue")} value={formatMoneyValue(storeSummary.ownedValue)} color="#8e24aa" count={t("currentStoreMatched")}/>
           {Object.entries(ss.rarityCounts||{}).map(([r,c])=>(
             <div key={r} style={{padding:"3px 10px",borderRadius:12,background:RC[r]?.bg,border:`1px solid ${RC[r]?.bd}44`,fontSize:11,color:RC[r]?.tx,fontWeight:600}}>{translateRarity(lang, r)} ×{c}</div>
           ))}
@@ -650,11 +679,11 @@ function InventoryPanel({data,lang,locale,t}) {
 
       {/* ── View Tabs ── */}
       <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-        {[["all",t("allAssets"),ts.totalItems||0],["steamOnly",t("steamWebOnly"),ss.steamWebOnlyDistinct||0],["store",t("storeCatalog"),storeSummary.totalItems||0]].map(([v,l,n])=>(
-          <button key={v} onClick={()=>setView(v)} style={{
+        {[["all",t("allAssets"),ts.totalItems||0],["steamOnly",t("steamWebOnly"),ss.steamWebOnlyDistinct||0],["store",t("storeCatalog"),storeSummary.ownedCount||0]].map(([v,l,n])=>(
+          <button key={v} className={`neon-button neon-filter-button ${view===v?"active":""}`} onClick={()=>setView(v)} style={{
             padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
-            background:view===v?"rgba(255,193,7,.12)":"rgba(255,255,255,.03)",
-            color:view===v?"#ffc107":"#546e7a",transition:"all .2s",
+            background:view===v?"rgba(0,229,255,.12)":"rgba(255,255,255,.03)",
+            color:view===v?"#6ef7ff":"#7e8aab",transition:"all .2s",
           }}>{l} ({n})</button>
         ))}
       </div>
@@ -667,7 +696,7 @@ function InventoryPanel({data,lang,locale,t}) {
             : `${t("mergedInventory")} (${lang==="zh"?`${fmtFull(ss.totalItems||0, locale)}件 / ${fmtFull(ss.distinctItems||sortedSkins.length, locale)}种`:`${fmtFull(ss.totalItems||0, locale)} items / ${fmtFull(ss.distinctItems||sortedSkins.length, locale)} unique`})`}/>
           <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
             {[["price",t("sortByPrice")],["name",t("sortByName")]].map(([v,l])=>(
-              <button key={v} onClick={()=>setSortBy(v)} style={{padding:"5px 14px",borderRadius:8,border:"none",cursor:"pointer",background:sortBy===v?"rgba(255,193,7,.12)":"rgba(255,255,255,.03)",color:sortBy===v?"#ffc107":"#78909c",fontSize:12,fontWeight:600}}>{l}</button>
+              <button key={v} className={`neon-button neon-filter-button ${sortBy===v?"active":""}`} onClick={()=>setSortBy(v)} style={{padding:"5px 14px",borderRadius:8,border:"none",cursor:"pointer",background:sortBy===v?"rgba(0,229,255,.12)":"rgba(255,255,255,.03)",color:sortBy===v?"#6ef7ff":"#8a94b4",fontSize:12,fontWeight:600}}>{l}</button>
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -677,7 +706,7 @@ function InventoryPanel({data,lang,locale,t}) {
                 ? (item.source==="steam-web+scmm"?"Steam 网页 + SCMM":item.source==="steam-web+market"?"Steam 网页 + 市场":item.source==="scmm-profile"?"SCMM":"Steam 网页")
                 : (item.source==="steam-web+scmm"?"Steam Web + SCMM":item.source==="steam-web+market"?"Steam Web + Market":item.source==="scmm-profile"?"SCMM":"Steam Web");
               return (
-                <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:rc.bg,borderRadius:12,border:`1px solid ${rc.bd}25`,transition:"all .2s",flexWrap:"wrap"}}>
+                <div key={i} className="neon-card neon-row neon-card-interactive" style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:rc.bg,borderRadius:12,border:`1px solid ${rc.bd}25`,transition:"all .2s",flexWrap:"wrap"}}>
                   {item.iconUrl?<img src={item.iconUrl} alt="" style={{width:42,height:42,borderRadius:8,background:"rgba(0,0,0,.3)"}}/>:<div style={{width:42,height:42,borderRadius:8,background:"rgba(0,0,0,.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🎨</div>}
                   <div style={{flex:1,minWidth:220}}>
                     <div style={{fontSize:14,fontWeight:700,color:rc.tx,overflowWrap:"anywhere"}}>{pickDisplayName(item, lang)}</div>
@@ -690,7 +719,7 @@ function InventoryPanel({data,lang,locale,t}) {
                     </div>
                   </div>
                   <div style={{fontSize:15,fontWeight:700,color:item.price>10?"#ffc107":"#78909c",fontFamily:"'JetBrains Mono',monospace",marginLeft:"auto",minWidth:120,textAlign:"right"}}>
-                    <div>{item.price>0?fmtMoney(item.price, locale):"—"}</div>
+                    <div>{item.price>0?formatMoneyValue(item.price):"—"}</div>
                     <div style={{fontSize:10,color:"#546e7a",marginTop:4}}>{item.priceSource||t("unpriced")}</div>
                   </div>
                 </div>
@@ -702,21 +731,21 @@ function InventoryPanel({data,lang,locale,t}) {
 
       {(view==="all"||view==="store")&&sortedStore.length>0&&(
         <div style={{marginTop:view==="all"?18:0}}>
-          <SectionTitle emoji="🛍️" title={`${t("storeCatalog")} (${lang==="zh"?`${fmtFull(storeSummary.totalItems||sortedStore.length, locale)}项，已在库存匹配 ${fmtFull(storeSummary.ownedCount||0, locale)} 项`:`${fmtFull(storeSummary.totalItems||sortedStore.length, locale)} items, ${fmtFull(storeSummary.ownedCount||0, locale)} matched in inventory`})`}/>
+          <SectionTitle emoji="🛍️" title={`${t("storeCatalog")} (${lang==="zh"?`${fmtFull(storeSummary.ownedCount||sortedStore.length, locale)}项`:`${fmtFull(storeSummary.ownedCount||sortedStore.length, locale)} items`})`}/>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {sortedStore.map((item,i)=>(
-              <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:item.owned?"rgba(102,187,106,.08)":"rgba(255,255,255,.02)",borderRadius:12,border:`1px solid ${item.owned?"rgba(102,187,106,.18)":"rgba(255,255,255,.05)"}`,flexWrap:"wrap"}}>
+              <div key={i} className="neon-card neon-row neon-card-interactive" style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:"rgba(102,187,106,.08)",borderRadius:12,border:"1px solid rgba(102,187,106,.18)",flexWrap:"wrap"}}>
                 <div style={{flex:1,minWidth:220}}>
-                  <div style={{fontSize:14,fontWeight:700,color:item.owned?"#a5d6a7":"#eceff1",overflowWrap:"anywhere"}}>{pickDisplayName(item, lang)}</div>
+                  <div style={{fontSize:14,fontWeight:700,color:"#a5d6a7",overflowWrap:"anywhere"}}>{pickDisplayName(item, lang)}</div>
                   {(item.nameCN&&item.nameCN!==item.name)&&<div style={{fontSize:11,color:"#78909c",marginTop:2,overflowWrap:"anywhere"}}>{lang==="zh" ? item.name : item.nameCN}</div>}
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
                     <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{lang==="zh" ? (item.category||t("storeItem")) : (item.categoryEN || item.category || t("storeItem"))}</span>
-                    <span style={{fontSize:10,color:item.owned?"#a5d6a7":"#78909c",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.owned?"rgba(102,187,106,.2)":"rgba(255,255,255,.08)"}`}}>{item.owned?t("hitInInventory"):t("notHitInInventory")}</span>
+                    <span style={{fontSize:10,color:"#a5d6a7",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(102,187,106,.2)"}}>{t("hitInInventory")}</span>
                     <span style={{fontSize:10,color:item.scmmAvailable?"#66bb6a":"#42a5f5",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.scmmAvailable?"rgba(102,187,106,.18)":"rgba(66,165,245,.18)"}`}}>{item.scmmAvailable?t("scmmAvailable"):t("steamWebExclusive")}</span>
                   </div>
                 </div>
                 <div style={{marginLeft:"auto",textAlign:"right",minWidth:120}}>
-                  <div style={{fontSize:15,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{item.priceText||"—"}</div>
+                  <div style={{fontSize:15,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{typeof item.priceValue === "number" ? formatMoneyValue(item.priceValue) : (item.priceText||"—")}</div>
                   {item.storeUrl&&<a href={item.storeUrl} target="_blank" rel="noreferrer" style={{fontSize:11,color:"#64b5f6",textDecoration:"none"}}>{t("openStore")}</a>}
                 </div>
               </div>
@@ -730,7 +759,7 @@ function InventoryPanel({data,lang,locale,t}) {
 
 function ValueChip({label,value,color,count}) {
   return (
-    <div style={{padding:"4px 12px",borderRadius:10,background:`${color}0a`,border:`1px solid ${color}22`,display:"flex",alignItems:"center",gap:6}}>
+    <div className="neon-chip" style={{padding:"4px 12px",borderRadius:10,background:`${color}0a`,border:`1px solid ${color}22`,display:"flex",alignItems:"center",gap:6}}>
       <span style={{fontSize:12,fontWeight:700,color,fontFamily:"'JetBrains Mono',monospace"}}>{value}</span>
       <span style={{fontSize:10,color:"#78909c"}}>{label}</span>
       {count&&<span style={{fontSize:9,color:"#455a64"}}>({count})</span>}
@@ -757,15 +786,18 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
   const sm=data?.summary;
   return (
     <div style={{animation:"fadeIn .5s ease"}}>
+      <div className="neon-card" style={{padding:"14px 16px",borderRadius:14,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.18)",color:"#ffcc80",fontSize:12,marginBottom:18,lineHeight:1.6}}>
+        {t("serversTab")}：{t("serversDevNotice")}
+      </div>
       {candidates.length>0&&(
-        <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"18px",marginBottom:18,border:"1px solid rgba(255,255,255,.05)"}}>
+        <div className="neon-panel neon-panel-blue" style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"18px",marginBottom:18,border:"1px solid rgba(255,255,255,.05)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:14}}>
             <div>
               <div style={{fontSize:14,fontWeight:700,color:"#eceff1"}}>{t("chooseBmUser")}</div>
               <div style={{fontSize:11,color:"#78909c",marginTop:4}}>{t("chooseBmHint")}</div>
             </div>
             {data&&(
-              <button onClick={onResetSelection} style={{padding:"8px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#b0bec5",fontSize:12,cursor:"pointer"}}>
+              <button className="neon-button" onClick={onResetSelection} style={{padding:"8px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#b0bec5",fontSize:12,cursor:"pointer"}}>
                 {t("reselect")}
               </button>
             )}
@@ -773,6 +805,7 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
             {candidates.map((candidate)=>(
               <button
+                className={`neon-button neon-option-button ${selectedBmId===candidate.bmId?"active":""}`}
                 key={candidate.bmId}
                 onClick={()=>onSelectBm(candidate.bmId)}
                 style={{
@@ -804,6 +837,7 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
               {selectedCandidate?`${t("selectedNow")}：${selectedCandidate.name} (${selectedCandidate.bmId})`:t("selectOneFirst")}
             </div>
             <button
+              className={`neon-button neon-button-primary ${(!selectedBmId||loading)?"disabled":""}`}
               onClick={onLoadSelected}
               disabled={!selectedBmId||loading}
               style={{
@@ -824,13 +858,13 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
       )}
 
       {loading&&(
-        <div style={{padding:"14px 16px",borderRadius:14,background:"rgba(33,150,243,.08)",border:"1px solid rgba(33,150,243,.16)",color:"#90caf9",fontSize:12,marginBottom:18}}>
+        <div className="neon-card" style={{padding:"14px 16px",borderRadius:14,background:"rgba(33,150,243,.08)",border:"1px solid rgba(33,150,243,.16)",color:"#90caf9",fontSize:12,marginBottom:18}}>
           {t("loadingSelectedServer")}
         </div>
       )}
       {!data ? null : (
       <>
-      <div style={{background:"linear-gradient(135deg,rgba(33,150,243,.08),rgba(30,30,50,.4))",borderRadius:18,padding:"24px 28px",marginBottom:20,border:"1px solid rgba(33,150,243,.12)"}}>
+      <div className="neon-panel neon-panel-blue" style={{background:"linear-gradient(135deg,rgba(33,150,243,.08),rgba(30,30,50,.4))",borderRadius:18,padding:"24px 28px",marginBottom:20,border:"1px solid rgba(33,150,243,.12)"}}>
         <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>{t("totalPlaytime")}</div>
         <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
           <span style={{fontSize:"clamp(30px,4vw,46px)",fontWeight:900,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(sm.totalHours, lang, locale)}</span>
@@ -844,7 +878,7 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
         {data.servers.map((srv,i)=>{
           const pct=(srv.totalHours/maxH)*100;const on=srv.status==="online";
           return (
-            <div key={i} style={{background:"rgba(255,255,255,.02)",borderRadius:12,padding:"14px 16px",border:"1px solid rgba(255,255,255,.04)",position:"relative",overflow:"hidden"}}>
+            <div key={i} className="neon-card neon-row neon-card-interactive" style={{background:"rgba(255,255,255,.02)",borderRadius:12,padding:"14px 16px",border:"1px solid rgba(255,255,255,.04)",position:"relative",overflow:"hidden"}}>
               <div style={{position:"absolute",left:0,top:0,bottom:0,width:`${pct}%`,background:"rgba(33,150,243,.05)"}}/>
               <div style={{position:"relative",zIndex:1}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:10,flexWrap:"wrap"}}>
@@ -874,6 +908,10 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
 // ═══════════════════════════
 export default function App() {
   const [lang,setLang]=useState(detectInitialLang);
+  const [currency,setCurrency]=useState(()=>detectInitialCurrency(detectInitialLang()));
+  const [currencyManual,setCurrencyManual]=useState(detectCurrencyManual);
+  const [usdToCny,setUsdToCny]=useState(null);
+  const [rateMeta,setRateMeta]=useState(null);
   const [tab,setTab]=useState("kda");
   const [steamId,setSteamId]=useState("");
   const [loading,setLoading]=useState(false);
@@ -888,6 +926,10 @@ export default function App() {
   const [demo,setDemo]=useState(false);
   const locale = lang === "zh" ? "zh-CN" : "en-US";
   const t = useCallback((key) => UI[lang]?.[key] || UI.zh[key] || key, [lang]);
+  const formatMoneyValue = useCallback((value) => {
+    const converted = convertMoney(value, currency, usdToCny);
+    return fmtMoney(converted, locale, currency);
+  }, [currency, locale, usdToCny]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -895,6 +937,79 @@ export default function App() {
       document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     }
   }, [lang]);
+
+  useEffect(() => {
+    if (!currencyManual) {
+      setCurrency(defaultCurrencyForLang(lang));
+    }
+  }, [lang, currencyManual]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (currencyManual) {
+      window.localStorage.setItem("rust-kda-currency", currency);
+      window.localStorage.setItem("rust-kda-currency-manual", "1");
+    } else {
+      window.localStorage.removeItem("rust-kda-currency");
+      window.localStorage.removeItem("rust-kda-currency-manual");
+    }
+  }, [currency, currencyManual]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (currency !== "CNY") {
+      setUsdToCny(1);
+      return;
+    }
+
+    const cacheKey = "rust-kda-usd-cny-rate";
+    const now = Date.now();
+    const applyRate = (payload, stale = false) => {
+      if (cancelled || !payload?.rate) return;
+      setUsdToCny(payload.rate);
+      setRateMeta({
+        provider: payload.provider,
+        documentation: payload.documentation,
+        nextUpdateUnix: payload.nextUpdateUnix,
+        stale,
+      });
+    };
+
+    try {
+      const cached = typeof window !== "undefined" ? JSON.parse(window.localStorage.getItem(cacheKey) || "null") : null;
+      if (cached?.rate && cached?.nextUpdateUnix && now < cached.nextUpdateUnix * 1000) {
+        applyRate(cached);
+        return () => { cancelled = true; };
+      }
+      if (cached?.rate) {
+        applyRate(cached, true);
+      }
+    } catch {}
+
+    fetch("https://open.er-api.com/v6/latest/USD")
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled || payload?.result !== "success" || typeof payload?.rates?.CNY !== "number") return;
+        const nextUpdateUnix = payload.time_next_update_unix || 0;
+        const cachedPayload = {
+          rate: payload.rates.CNY,
+          provider: payload.provider || "https://www.exchangerate-api.com",
+          documentation: payload.documentation || "https://www.exchangerate-api.com/docs/free",
+          nextUpdateUnix,
+        };
+        try {
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(cacheKey, JSON.stringify(cachedPayload));
+          }
+        } catch {}
+        applyRate(cachedPayload);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currency]);
 
   const apiJson = useCallback(async (path, options = {}) => {
     const headers = {...(options.headers||{})};
@@ -968,68 +1083,446 @@ export default function App() {
   },[apiJson, steamId, t]);
 
   const tabs=[
-    {id:"kda",label:t("kdaTab"),icon:"⚔️",color:"#ef5350"},
-    {id:"inventory",label:t("inventoryTab"),icon:"💰",color:"#ffc107"},
-    {id:"servers",label:t("serversTab"),icon:"🖥️",color:"#42a5f5"},
+    {id:"kda",label:t("kdaTab"),icon:"⚔️",color:"#00e5ff"},
+    {id:"inventory",label:t("inventoryTab"),icon:"💰",color:"#b388ff"},
+    {id:"servers",label:t("serversTab"),icon:"🖥️",color:"#4dd0e1"},
   ];
   const isActiveStatus = ["在线", "游戏中", "Online", "In Game"].includes(player?.status);
+  const rateText = currency === "CNY" && typeof usdToCny === "number"
+    ? `1 USD ≈ ${fmtMoney(usdToCny, locale, "CNY")}`
+    : "1 USD";
 
   return (
-    <div style={{minHeight:"100vh",background:"#08080d",fontFamily:"'Noto Sans SC','Inter',-apple-system,sans-serif",color:"#e0e0e0"}}>
+    <div className="site-shell" style={{minHeight:"100vh",background:"transparent",fontFamily:"'Noto Sans SC','Inter',-apple-system,sans-serif",color:"#e0e0e0"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
         @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
         @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
         @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+        @keyframes particleDriftSlow{from{transform:translate3d(0,0,0)}to{transform:translate3d(0,-120px,0)}}
+        @keyframes particleDriftFast{from{transform:translate3d(0,0,0)}to{transform:translate3d(0,-180px,0)}}
+        @keyframes neonSweep{0%{transform:translateX(-170%) rotate(12deg)}100%{transform:translateX(760%) rotate(12deg)}}
         *{box-sizing:border-box;margin:0;padding:0}
-        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:2px}
-        input::placeholder{color:#37474f}
-        body{background:#08080d}
-        .app-shell{width:min(100%,1760px);margin:0 auto;padding:0 clamp(12px,2.4vw,28px) 28px}
-        .header-shell{padding:20px clamp(12px,2.4vw,28px) 16px}
-        .search-shell{display:flex;gap:8px;flex-wrap:wrap}
+        :root{
+          --bg-0:#050214;
+          --bg-1:#0c0720;
+          --bg-2:#120a2e;
+          --panel:#09061acc;
+          --panel-strong:#0d0824f2;
+          --panel-soft:#ffffff08;
+          --border:rgba(0,229,255,.12);
+          --border-strong:rgba(179,136,255,.24);
+          --text-0:#f2f7ff;
+          --text-1:#c8d1ea;
+          --text-2:#8f96b8;
+          --accent:#00e5ff;
+          --accent-2:#b388ff;
+          --accent-3:#6ef7ff;
+          --shadow-lg:0 24px 60px rgba(0,0,0,.42);
+          --shadow-md:0 14px 30px rgba(0,0,0,.28);
+          --radius-xl:22px;
+          --radius-lg:18px;
+          --radius-md:14px;
+        }
+        ::-webkit-scrollbar{width:8px}
+        ::-webkit-scrollbar-thumb{background:rgba(0,229,255,.16);border-radius:999px}
+        input::placeholder{color:#7881a8}
+        body{
+          position:relative;
+          background:#030014;
+          color:var(--text-0);
+        }
+        .site-shell{
+          position:relative;
+          isolation:isolate;
+          overflow:hidden;
+        }
+        .particle-bg{
+          position:fixed;
+          inset:0;
+          pointer-events:none;
+          z-index:0;
+          overflow:hidden;
+        }
+        .particle-layer{
+          position:absolute;
+          inset:-20vh 0;
+          background-image:radial-gradient(circle, rgba(255,255,255,.9) 1px, transparent 1.4px);
+          background-repeat:repeat;
+          mix-blend-mode:screen;
+          will-change:transform;
+        }
+        .particle-layer-one{
+          background-size:72px 72px;
+          background-position:0 0;
+          opacity:.3;
+          animation:particleDriftSlow 32s linear infinite;
+        }
+        .particle-layer-two{
+          background-size:118px 132px;
+          background-position:28px 34px;
+          opacity:.18;
+          filter:blur(.4px);
+          animation:particleDriftFast 22s linear infinite;
+        }
+        .site-shell::before{
+          content:"";
+          position:absolute;
+          inset:0;
+          pointer-events:none;
+          background:
+            linear-gradient(180deg, rgba(255,255,255,.02), transparent 18%);
+          z-index:0;
+        }
+        .site-shell::after{
+          content:"";
+          position:absolute;
+          left:50%;
+          bottom:-8rem;
+          width:min(92rem,124vw);
+          height:30rem;
+          transform:translateX(-50%);
+          pointer-events:none;
+          background:
+            radial-gradient(ellipse at 50% 42%, rgba(0,229,255,.12), rgba(0,229,255,.06) 26%, rgba(53,0,104,.28) 56%, transparent 76%),
+            linear-gradient(180deg, rgba(3,0,20,0), rgba(8,5,30,.24) 72%, rgba(3,0,20,.7));
+          filter:blur(16px);
+          opacity:.42;
+          z-index:0;
+        }
+        .app-shell{position:relative;z-index:1;width:min(100%,1720px);margin:0 auto;padding:0 clamp(14px,2.4vw,30px) 34px}
+        .header-shell{padding:22px clamp(14px,2.4vw,30px) 12px}
+        .header-panel{
+          position:relative;
+          overflow:hidden;
+          border-radius:26px;
+          border:1px solid rgba(0,229,255,.18);
+          background:
+            linear-gradient(180deg, rgba(8,5,25,.74), rgba(4,2,15,.84)) padding-box,
+            linear-gradient(135deg, rgba(0,229,255,.22), rgba(179,136,255,.12)) border-box;
+          box-shadow:
+            0 18px 50px rgba(0,0,0,.55),
+            0 0 0 1px rgba(0,229,255,.08),
+            inset 0 1px 0 rgba(255,255,255,.05);
+          padding:20px;
+        }
+        .header-panel::before{
+          content:"";
+          position:absolute;
+          inset:0;
+          pointer-events:none;
+          background:
+            radial-gradient(circle at 18% 18%, rgba(0,229,255,.14), transparent 24%),
+            radial-gradient(circle at 82% 22%, rgba(124,77,255,.18), transparent 28%),
+            linear-gradient(180deg, rgba(255,255,255,.02), transparent 40%);
+        }
+        .header-top{
+          position:relative;
+          z-index:1;
+          display:flex;
+          align-items:center;
+          gap:12px;
+          margin-bottom:16px;
+          flex-wrap:wrap;
+        }
+        .brand-badge{
+          width:42px;
+          height:42px;
+          border-radius:14px;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          font-size:18px;
+          font-weight:900;
+          color:#fff;
+          font-family:"JetBrains Mono", monospace;
+          background:
+            linear-gradient(135deg, rgba(0,229,255,.2), rgba(179,136,255,.36));
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,.18),
+            0 16px 28px rgba(6,10,18,.36),
+            0 0 0 1px rgba(0,229,255,.18),
+            0 0 24px rgba(0,229,255,.2);
+        }
+        .brand-meta{
+          flex:1;
+          min-width:240px;
+        }
+        .brand-title{
+          font-size:18px;
+          font-weight:800;
+          letter-spacing:-.4px;
+          color:var(--text-0);
+        }
+        .brand-subtitle{
+          margin-top:4px;
+          font-size:10px;
+          letter-spacing:1.6px;
+          text-transform:uppercase;
+          color:#7a85ad;
+        }
+        .search-shell{display:flex;gap:10px;flex-wrap:wrap}
         .search-shell input{min-width:240px}
-        .tab-shell{display:flex;gap:6px;flex-wrap:wrap;padding:0 clamp(12px,2.4vw,28px) 10px}
-        .content-shell{padding-top:18px}
-        .player-shell{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;padding:14px 18px;background:rgba(255,255,255,.02);border-radius:14px;border:1px solid rgba(255,255,255,.04)}
-        .lang-switch{display:flex;align-items:center;gap:6px;padding:5px;border-radius:999px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}
-        .lang-switch button{padding:6px 12px;border:none;border-radius:999px;background:transparent;color:#78909c;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
-        .lang-switch button.active{background:rgba(255,255,255,.1);color:#eceff1}
+        .tab-shell{
+          display:flex;
+          gap:10px;
+          padding:0 clamp(14px,2.4vw,30px) 14px;
+          flex-wrap:wrap;
+          align-items:center;
+        }
+        .content-shell{padding-top:20px}
+        .player-shell{
+          display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;padding:16px 18px;
+          background:
+            linear-gradient(180deg, rgba(8,5,25,.66), rgba(4,2,15,.78)) padding-box,
+            linear-gradient(118deg, rgba(0,229,255,.08), rgba(124,77,255,.16), rgba(0,229,255,.12)) border-box;
+          border-radius:var(--radius-lg);
+          border:1px solid transparent;
+        }
+        .neon-panel,.neon-card,.player-shell,.lang-switch,.neon-chip{
+          position:relative;
+          overflow:hidden;
+          backdrop-filter:blur(14px);
+          box-shadow:var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,.04);
+        }
+        .neon-panel::after,.neon-card::after,.player-shell::after{
+          content:"";
+          position:absolute;
+          inset:-1px;
+          border-radius:inherit;
+          padding:1px;
+          background:
+            linear-gradient(118deg, rgba(255,255,255,.18) 0%, rgba(0,229,255,.34) 14%, rgba(0,229,255,.95) 22%, rgba(255,255,255,.16) 34%, rgba(179,136,255,.62) 48%, rgba(255,255,255,.1) 60%, rgba(0,229,255,.9) 76%, rgba(124,77,255,.26) 100%);
+          background-size:300% 300%;
+          -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          -webkit-mask-composite:xor;
+          mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          mask-composite:exclude;
+          filter:drop-shadow(0 0 10px rgba(0,229,255,.16)) drop-shadow(0 0 18px rgba(124,77,255,.12));
+          pointer-events:none;
+          opacity:.3;
+        }
+        .neon-panel > *,.neon-card > *,.player-shell > *,.lang-switch > *{position:relative;z-index:1}
+        .neon-panel{
+          background:
+            linear-gradient(180deg, rgba(8,5,25,.62), rgba(4,2,15,.78)) padding-box,
+            linear-gradient(118deg, rgba(0,229,255,.08), rgba(124,77,255,.16), rgba(0,229,255,.12)) border-box;
+          border-radius:var(--radius-xl);
+          border:1px solid transparent;
+        }
+        .neon-panel-ember{box-shadow:var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,.04), 0 0 0 1px rgba(0,229,255,.08)}
+        .neon-panel-gold{box-shadow:var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,.04), 0 0 0 1px rgba(179,136,255,.08)}
+        .neon-panel-blue{box-shadow:var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,.04), 0 0 0 1px rgba(0,229,255,.08)}
+        .neon-panel-accent{box-shadow:var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,.04), 0 0 0 1px rgba(124,77,255,.12)}
+        .neon-card-interactive,.neon-row,.neon-button{transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease, color .18s ease}
+        .neon-card-interactive:hover,.neon-row:hover{
+          transform:translateY(-2px);
+          box-shadow:
+            0 20px 46px rgba(0,0,0,.34),
+            inset 0 1px 0 rgba(255,255,255,.05),
+            0 0 0 1px rgba(0,229,255,.12),
+            0 0 24px rgba(0,229,255,.08);
+        }
+        .neon-chip{
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 18px rgba(0,0,0,.18);
+        }
+        .neon-input{
+          background:
+            linear-gradient(180deg, rgba(10,8,30,.78), rgba(5,5,20,.88)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.18), rgba(179,136,255,.12)) border-box !important;
+          border:1px solid transparent !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 12px 24px rgba(0,0,0,.22);
+          transition:box-shadow .2s ease, transform .2s ease;
+        }
+        .neon-input:focus{
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 16px 30px rgba(0,0,0,.24), 0 0 0 1px rgba(0,229,255,.28), 0 0 18px rgba(0,229,255,.12);
+          transform:translateY(-1px);
+        }
+        .lang-switch{
+          display:flex;align-items:center;gap:6px;padding:6px;border-radius:999px;
+          background:rgba(5,5,20,.78);border:1px solid rgba(0,229,255,.18);
+          box-shadow:var(--shadow-md), inset 0 1px 0 rgba(255,255,255,.04);
+        }
+        .toolbar-group{
+          display:flex;
+          align-items:center;
+          gap:8px;
+          flex-wrap:wrap;
+          justify-content:flex-end;
+        }
+        .toolbar-meta{
+          display:flex;
+          flex-direction:column;
+          align-items:flex-end;
+          gap:4px;
+        }
+        .toolbar-note{
+          font-size:10px;
+          color:#7c89ab;
+          display:flex;
+          gap:8px;
+          align-items:center;
+          flex-wrap:wrap;
+          justify-content:flex-end;
+        }
+        .toolbar-note a{
+          color:#8ecfff;
+          text-decoration:none;
+        }
+        .lang-switch button{padding:7px 13px;border:none;border-radius:999px;background:transparent;color:#97a4c7;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
+        .lang-switch button.active{
+          background:linear-gradient(180deg, rgba(0,229,255,.18), rgba(179,136,255,.14));
+          color:#f7fbff;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 8px 18px rgba(0,0,0,.18), 0 0 12px rgba(0,229,255,.16);
+        }
+        .neon-button{
+          position:relative;
+          overflow:hidden;
+          isolation:isolate;
+          background:
+            linear-gradient(180deg, rgba(10,8,30,.78), rgba(5,5,20,.88)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.18), rgba(179,136,255,.08)) border-box !important;
+          border:1px solid transparent !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 10px 20px rgba(0,0,0,.22);
+        }
+        .neon-button::before{
+          content:"";
+          position:absolute;
+          inset:-30% auto -30% -46%;
+          width:18%;
+          background:linear-gradient(115deg, transparent 20%, rgba(255,255,255,.12) 50%, transparent 78%);
+          transform:translateX(-170%) rotate(12deg);
+          pointer-events:none;
+          opacity:0;
+          filter:blur(1px);
+        }
+        .neon-button:hover:not(.disabled)::before{
+          opacity:.24;
+          animation:neonSweep 1.1s ease forwards;
+        }
+        .neon-button:hover:not(.disabled){
+          transform:translateY(-2px);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 14px 24px rgba(0,0,0,.22), 0 0 0 1px rgba(0,229,255,.12), 0 0 18px rgba(0,229,255,.08);
+        }
+        .neon-button.active{
+          background:
+            linear-gradient(180deg, rgba(16,11,41,.98), rgba(8,5,25,.98)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.36), rgba(179,136,255,.24)) border-box !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.09), 0 14px 24px rgba(0,0,0,.20), 0 0 0 1px rgba(0,229,255,.18), 0 0 22px rgba(0,229,255,.08);
+        }
+        .neon-button-primary{
+          background:
+            linear-gradient(135deg, rgba(0,229,255,.92), rgba(124,77,255,.88)) padding-box,
+            linear-gradient(120deg, rgba(255,255,255,.28), rgba(255,255,255,.08)) border-box !important;
+          color:#fff !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 16px 28px rgba(19,10,72,.28), 0 0 22px rgba(0,229,255,.14);
+        }
+        .neon-button-primary:hover:not(.disabled){
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 18px 32px rgba(19,10,72,.32), 0 0 26px rgba(0,229,255,.18);
+        }
+        .neon-filter-button{
+          background:
+            linear-gradient(180deg, rgba(9,8,26,.86), rgba(5,5,20,.9)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.12), rgba(179,136,255,.08)) border-box !important;
+          color:#97a6c8 !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 14px rgba(0,0,0,.14);
+        }
+        .neon-filter-button.active{
+          color:#f7fbff !important;
+        }
+        .neon-tab{
+          border-radius:14px !important;
+          min-width:auto;
+          justify-content:center;
+          gap:6px !important;
+          padding:10px 14px !important;
+          background:
+            linear-gradient(180deg, rgba(10,8,30,.94), rgba(5,5,20,.98)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.16), rgba(179,136,255,.10)) border-box !important;
+          color:#a9b5d4 !important;
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 16px rgba(0,0,0,.14);
+        }
+        .neon-tab.active{
+          color:#f4f8ff !important;
+          background:
+            linear-gradient(180deg, rgba(16,11,41,.98), rgba(8,5,25,.98)) padding-box,
+            linear-gradient(120deg, rgba(0,229,255,.36), rgba(179,136,255,.24)) border-box !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,.08),
+            0 14px 24px rgba(0,0,0,.18),
+            0 0 0 1px rgba(0,229,255,.18),
+            0 0 18px rgba(0,229,255,.08);
+        }
+        .neon-option-button{
+          width:100%;
+          border-radius:14px !important;
+          text-align:left;
+        }
+        .neon-option-button.active{
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 12px 22px rgba(0,0,0,.18), 0 0 0 1px rgba(0,229,255,.16), 0 0 18px rgba(0,229,255,.08);
+        }
         @media (max-width: 900px){
           .header-shell{padding-top:16px}
           .tab-shell{padding-bottom:8px}
         }
         @media (max-width: 640px){
           .search-shell input{min-width:0;width:100%}
+          .header-panel{padding:16px}
         }
       `}</style>
 
+      <div className="particle-bg" aria-hidden="true">
+        <div className="particle-layer particle-layer-one" />
+        <div className="particle-layer particle-layer-two" />
+      </div>
+
       {/* Header */}
-      <div style={{background:"linear-gradient(180deg,rgba(205,65,43,.06) 0%,transparent 100%)",borderBottom:"1px solid rgba(255,255,255,.03)"}} className="header-shell">
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
-          <div style={{width:42,height:42,borderRadius:12,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:900,color:"#fff",boxShadow:"0 4px 18px rgba(205,65,43,.35)",fontFamily:"'JetBrains Mono',monospace"}}>R</div>
-          <div style={{flex:1}}><div style={{fontSize:18,fontWeight:800,letterSpacing:-.5}}>{t("appTitle")}</div><div style={{fontSize:10,color:"#455a64",letterSpacing:1}}>{t("appSubtitle")}</div></div>
-          <div className="lang-switch" aria-label={t("language")}>
-            <button className={lang==="zh"?"active":""} onClick={()=>setLang("zh")}>{t("chinese")}</button>
-            <button className={lang==="en"?"active":""} onClick={()=>setLang("en")}>{t("english")}</button>
+      <div style={{position:"relative",zIndex:1,background:"linear-gradient(180deg,rgba(0,229,255,.04) 0%,transparent 100%)",borderBottom:"1px solid rgba(255,255,255,.03)"}} className="header-shell">
+        <div className="header-panel">
+          <div className="header-top">
+            <div className="brand-badge">R</div>
+            <div className="brand-meta">
+              <div className="brand-title">{t("appTitle")}</div>
+              <div className="brand-subtitle">{t("appSubtitle")}</div>
+            </div>
+            <div className="toolbar-meta">
+              <div className="toolbar-group">
+                <div className="lang-switch" aria-label={t("language")}>
+                  <button className={lang==="zh"?"active":""} onClick={()=>setLang("zh")}>{t("chinese")}</button>
+                  <button className={lang==="en"?"active":""} onClick={()=>setLang("en")}>{t("english")}</button>
+                </div>
+                <div className="lang-switch" aria-label={t("currency")}>
+                  <button className={currency==="CNY"?"active":""} onClick={()=>{setCurrency("CNY");setCurrencyManual(true);}}>{t("rmbLabel")}</button>
+                  <button className={currency==="USD"?"active":""} onClick={()=>{setCurrency("USD");setCurrencyManual(true);}}>{t("usdLabel")}</button>
+                </div>
+              </div>
+              <div className="toolbar-note">
+                <span>{t("exchangeRate")} · {rateText}</span>
+                {rateMeta?.documentation && (
+                  <a href={rateMeta.documentation} target="_blank" rel="noreferrer">
+                    {t("rateAttribution")} ExchangeRate-API
+                  </a>
+                )}
+              </div>
+            </div>
           </div>
+          <div className="search-shell" style={{position:"relative",zIndex:1}}>
+            <input className="neon-input" value={steamId} onChange={e=>setSteamId(e.target.value)} onKeyDown={e=>e.key==="Enter"&&query()}
+              placeholder={t("queryPlaceholder")}
+              style={{flex:1,padding:"11px 14px",borderRadius:12,background:"rgba(255,255,255,.035)",border:"1px solid rgba(255,255,255,.06)",color:"#e0e0e0",fontSize:13,outline:"none",fontFamily:"'JetBrains Mono',monospace"}}
+            />
+            <button className={`neon-button neon-button-primary ${loading?"disabled":""}`} onClick={query} disabled={loading} style={{padding:"10px 22px",borderRadius:12,border:"none",background:loading?"rgba(0,229,255,.18)":"linear-gradient(135deg,#00e5ff,#7c4dff)",color:"#fff",fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",boxShadow:loading?"none":"0 4px 18px rgba(0,229,255,.22)",whiteSpace:"nowrap"}}>
+              {loading?"⏳":"🔍"} {t("queryButton")}
+            </button>
+          </div>
+          {demo&&<div style={{position:"relative",zIndex:1,marginTop:10,padding:"6px 12px",borderRadius:10,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.15)",fontSize:11,color:"#ffa726",textAlign:"center"}}>{t("demoNotice")}</div>}
         </div>
-        <div className="search-shell">
-          <input value={steamId} onChange={e=>setSteamId(e.target.value)} onKeyDown={e=>e.key==="Enter"&&query()}
-            placeholder={t("queryPlaceholder")}
-            style={{flex:1,padding:"11px 14px",borderRadius:10,background:"rgba(255,255,255,.035)",border:"1px solid rgba(255,255,255,.06)",color:"#e0e0e0",fontSize:13,outline:"none",fontFamily:"'JetBrains Mono',monospace"}}
-          />
-          <button onClick={query} disabled={loading} style={{padding:"10px 22px",borderRadius:10,border:"none",background:loading?"rgba(205,65,43,.25)":"linear-gradient(135deg,#cd412b,#e65100)",color:"#fff",fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",boxShadow:loading?"none":"0 4px 15px rgba(205,65,43,.3)",whiteSpace:"nowrap"}}>
-            {loading?"⏳":"🔍"} {t("queryButton")}
-          </button>
-        </div>
-        {demo&&<div style={{marginTop:10,padding:"6px 12px",borderRadius:8,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.15)",fontSize:11,color:"#ffa726",textAlign:"center"}}>{t("demoNotice")}</div>}
       </div>
 
       {/* Tabs */}
-      <div style={{borderBottom:"1px solid rgba(255,255,255,.03)",background:"rgba(0,0,0,.15)"}} className="tab-shell">
+      <div style={{position:"relative",zIndex:1,borderBottom:"1px solid rgba(255,255,255,.03)",background:"rgba(0,0,0,.15)"}} className="tab-shell">
         {tabs.map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 14px",border:"none",background:tab===t.id?`${t.color}0d`:"transparent",color:tab===t.id?t.color:"#455a64",fontSize:12,fontWeight:600,cursor:"pointer",borderBottom:tab===t.id?`2px solid ${t.color}`:"2px solid transparent",display:"flex",alignItems:"center",gap:5,transition:"all .2s"}}>
+          <button className={`neon-button neon-tab ${tab===t.id?"active":""}`} key={t.id} onClick={()=>setTab(t.id)} style={{border:"none",background:tab===t.id?`${t.color}0d`:"transparent",color:tab===t.id?t.color:"#455a64",fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",transition:"all .2s"}}>
             <span style={{fontSize:13}}>{t.icon}</span>{t.label}
           </button>
         ))}
@@ -1040,7 +1533,7 @@ export default function App() {
       <div className="content-shell">
         {loading?(
           <div style={{textAlign:"center",padding:"60px 20px"}}>
-            <div style={{display:"inline-block",animation:"spin 1s linear infinite"}}><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="rgba(205,65,43,.3)" strokeWidth="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="#cd412b" strokeWidth="3" strokeDasharray="40 36" strokeLinecap="round"/></svg></div>
+            <div style={{display:"inline-block",animation:"spin 1s linear infinite"}}><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="rgba(0,229,255,.24)" strokeWidth="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="#00e5ff" strokeWidth="3" strokeDasharray="40 36" strokeLinecap="round"/></svg></div>
             <div style={{fontSize:13,color:"#546e7a",marginTop:12,animation:"pulse 1.5s infinite"}}>{t("querying")}</div>
           </div>
         ):!player?(
@@ -1052,12 +1545,12 @@ export default function App() {
         ):(
           <>
             <div className="player-shell">
-              {player.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:48,height:48,borderRadius:12,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff"}}>{player.name?.[0]?.toUpperCase()||"?"}</div>}
+              {player.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:48,height:48,borderRadius:12,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#00e5ff,#7c4dff)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff"}}>{player.name?.[0]?.toUpperCase()||"?"}</div>}
               <div style={{flex:1,minWidth:220}}><div style={{fontSize:16,fontWeight:700,overflowWrap:"anywhere"}}>{player.name}</div><div style={{fontSize:11,color:"#455a64",fontFamily:"'JetBrains Mono',monospace",overflowWrap:"anywhere"}}>{player.steamId||steamId}</div></div>
               <div style={{padding:"4px 10px",borderRadius:8,background:isActiveStatus?"rgba(102,187,106,.08)":"rgba(120,144,156,.08)",fontSize:11,fontWeight:600,color:isActiveStatus?"#66bb6a":"#78909c"}}>{translateStatus(lang, player.status)}</div>
             </div>
-            {tab==="kda"&&kda&&<KDAPanel data={kda} player={player} inventory={inv} servers={srv} lang={lang} locale={locale} t={t}/>}
-            {tab==="inventory"&&inv&&<InventoryPanel data={inv} lang={lang} locale={locale} t={t}/>}
+            {tab==="kda"&&kda&&<KDAPanel data={kda} player={player} inventory={inv} servers={srv} lang={lang} locale={locale} t={t} formatMoneyValue={formatMoneyValue}/>}
+            {tab==="inventory"&&inv&&<InventoryPanel data={inv} lang={lang} locale={locale} t={t} formatMoneyValue={formatMoneyValue}/>}
             {tab==="servers"&&(
               <ServerPanel
                 data={srv}
