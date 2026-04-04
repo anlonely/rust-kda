@@ -1,26 +1,58 @@
 import { startTransition, useCallback, useEffect, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-const fmt = (n) => { if (n >= 1e6) return (n/1e6).toFixed(1)+"M"; if (n >= 1e3) return (n/1e3).toFixed(1)+"K"; return (n||0).toLocaleString(); };
-const timeAgo = (s) => { if(!s) return "—"; const h=(Date.now()-new Date(s).getTime())/36e5; if(h<1) return "刚刚"; if(h<24) return `${Math.floor(h)}小时前`; const d=h/24; return d<30?`${Math.floor(d)}天前`:`${Math.floor(d/30)}个月前`; };
-const fmtMetric = (v) => typeof v === "number" ? (Number.isInteger(v) ? fmt(v) : v.toLocaleString(undefined,{maximumFractionDigits:1})) : (v ?? "—");
-const fmtFull = (v) => typeof v === "number" ? v.toLocaleString(undefined,{maximumFractionDigits:Number.isInteger(v)?0:1}) : (v ?? "—");
-const fmtHours = (v) => v==null ? "—" : `${v.toLocaleString(undefined,{maximumFractionDigits:1})}h`;
-const fmtServerDuration = (v) => {
-  if (v == null) return "—";
-  if (v > 0 && v < 1) return `${Math.max(1, Math.round(v * 60))}分钟`;
-  return `${v.toLocaleString(undefined,{maximumFractionDigits:1})}小时`;
+const normalizeLang = (value) => String(value || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+const detectInitialLang = () => {
+  if (typeof window === "undefined") return "zh";
+  const saved = window.localStorage.getItem("rust-kda-language");
+  if (saved === "zh" || saved === "en") return saved;
+  const browserLang = window.navigator.languages?.[0] || window.navigator.language || "en";
+  return normalizeLang(browserLang);
 };
-const fmtDate = (ts) => !ts ? "—" : new Date(typeof ts==="number"?ts*1000:ts).toLocaleDateString("zh-CN");
-const fmtMoney = (v) => v==null ? "—" : `$${v.toFixed(2)}`;
-const fmtPercent = (v) => v==null ? "—" : `${v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}%`;
-const fmtDateTime = (ts) => !ts ? "—" : new Date(typeof ts==="number"?ts*1000:ts).toLocaleString("zh-CN",{hour12:false});
-const yearsSince = (ts) => {
-  if(!ts) return "—";
+const fmt = (n, locale = "en-US") => {
+  if (n >= 1e6) return (n / 1e6).toLocaleString(locale, { maximumFractionDigits: 1 }) + "M";
+  if (n >= 1e3) return (n / 1e3).toLocaleString(locale, { maximumFractionDigits: 1 }) + "K";
+  return (n || 0).toLocaleString(locale);
+};
+const timeAgo = (s, lang = "zh") => {
+  if (!s) return "—";
+  const h = (Date.now() - new Date(s).getTime()) / 36e5;
+  if (lang === "zh") {
+    if (h < 1) return "刚刚";
+    if (h < 24) return `${Math.floor(h)}小时前`;
+    const d = h / 24;
+    return d < 30 ? `${Math.floor(d)}天前` : `${Math.floor(d / 30)}个月前`;
+  }
+  if (h < 1) return "Just now";
+  if (h < 24) return `${Math.floor(h)}h ago`;
+  const d = h / 24;
+  return d < 30 ? `${Math.floor(d)}d ago` : `${Math.floor(d / 30)}mo ago`;
+};
+const fmtMetric = (v, locale = "en-US") => typeof v === "number" ? (Number.isInteger(v) ? fmt(v, locale) : v.toLocaleString(locale, { maximumFractionDigits: 1 })) : (v ?? "—");
+const fmtFull = (v, locale = "en-US") => typeof v === "number" ? v.toLocaleString(locale, { maximumFractionDigits: Number.isInteger(v) ? 0 : 1 }) : (v ?? "—");
+const fmtHours = (v, locale = "en-US") => v == null ? "—" : `${v.toLocaleString(locale, { maximumFractionDigits: 1 })}h`;
+const fmtServerDuration = (v, lang = "zh", locale = "en-US") => {
+  if (v == null) return "—";
+  if (v > 0 && v < 1) {
+    const minutes = Math.max(1, Math.round(v * 60));
+    return lang === "zh" ? `${minutes}分钟` : `${minutes} min`;
+  }
+  return lang === "zh"
+    ? `${v.toLocaleString(locale, { maximumFractionDigits: 1 })}小时`
+    : `${v.toLocaleString(locale, { maximumFractionDigits: 1 })}h`;
+};
+const fmtDate = (ts, locale = "zh-CN") => !ts ? "—" : new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleDateString(locale);
+const fmtMoney = (v, locale = "en-US", currency = "USD") => v == null ? "—" : new Intl.NumberFormat(locale, { style: "currency", currency }).format(v);
+const fmtPercent = (v, locale = "en-US") => v == null ? "—" : `${v.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+const fmtDateTime = (ts, locale = "zh-CN") => !ts ? "—" : new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleString(locale, { hour12: false });
+const yearsSince = (ts, lang = "zh", locale = "zh-CN") => {
+  if (!ts) return "—";
   const now = new Date();
-  const then = new Date(typeof ts==="number"?ts*1000:ts);
+  const then = new Date(typeof ts === "number" ? ts * 1000 : ts);
   const years = (now - then) / (365.25 * 24 * 60 * 60 * 1000);
-  return `${years.toFixed(1)}年`;
+  return lang === "zh"
+    ? `${years.toLocaleString(locale, { maximumFractionDigits: 1 })}年`
+    : `${years.toLocaleString(locale, { maximumFractionDigits: 1 })} years`;
 };
 
 const RC = {
@@ -33,6 +65,278 @@ const RC = {
   dlc_notowned:{bg:"#111",bd:"#37474f",tx:"#78909c",gw:"rgba(55,71,79,.15)"},
 };
 const rarityLabel = {legendary:"传说",epic:"史诗",rare:"稀有",uncommon:"普通",common:"基础"};
+const rarityLabelEn = { legendary: "Legendary", epic: "Epic", rare: "Rare", uncommon: "Uncommon", common: "Base" };
+
+const UI = {
+  zh: {
+    appTitle: "Rust 玩家查询工具",
+    appSubtitle: "KDA · INVENTORY · PLAYTIME",
+    language: "语言",
+    queryPlaceholder: "Steam ID64 / 自定义 URL / Vanity 名称...",
+    queryButton: "查询",
+    querying: "正在查询数据...",
+    emptyTitle: "输入 Steam ID 开始查询",
+    emptyHint: "支持 SteamID64 / 自定义 URL / Vanity 名称",
+    demoNotice: "⚡ 演示模式 — 后端未连接。运行 python rust_query_server_v2.py 启用真实查询",
+    kdaTab: "KDA 数据",
+    inventoryTab: "库存",
+    serversTab: "服务器时长",
+    playerCreated: "创建于",
+    online: "在线",
+    inGame: "游戏中",
+    offline: "离线",
+    demoStatus: "演示模式",
+    rustHours: "Rust 总时长",
+    recentTwoWeeks: "最近两周",
+    unlockedAchievements: "已解锁成就",
+    inventoryValue: "库存估值",
+    serverPlaytime: "服务器时长",
+    accountAge: "账号年龄",
+    recentActive: "最近活跃",
+    profileOverview: "Profile 概览",
+    profileOverviewValue: "官方 Steam 数据 + Rust Stats 映射",
+    compositeScore: "综合评分",
+    compositeScoreNote: "基于 KD、爆头率、Rust 时长、服务器时长和库存估值的本地画像分。",
+    kdRating: "KD 综合评级",
+    accuracyFormula: "准确率 = 玩家子弹命中 ÷ 子弹发射",
+    headshotFormula: "爆头率 = 爆头次数 ÷ 玩家子弹命中",
+    combatOverview: "战斗总览",
+    totalAssetValue: "账号总资产价值",
+    tradable: "可交易",
+    storeOwnedValue: "官方商城命中价值",
+    inventoryUnavailable: "库存估值不可用",
+    storeUnavailable: "商城目录不可用",
+    inventoryWorth: "库存价值",
+    steamWebOnly: "Steam 网页独有",
+    scmmPriced: "SCMM 已定价",
+    currentStore: "当前官方商城",
+    nonTradableValue: "不可交易价值",
+    matchedCount: "已匹配",
+    currentStoreMatched: "当前商城命中",
+    allAssets: "全部资产",
+    storeCatalog: "官方商城目录",
+    mergedInventory: "合并库存",
+    steamOnlyAssets: "Steam 网页独有资产",
+    sortByPrice: "按价格",
+    sortByName: "按名称",
+    accountBound: "账号绑定",
+    unpriced: "未定价",
+    inventoryItem: "库存物品",
+    storeItem: "商城物品",
+    hitInInventory: "已在库存命中",
+    notHitInInventory: "未在库存命中",
+    scmmAvailable: "SCMM 可定价",
+    steamWebExclusive: "Steam 网页专属",
+    openStore: "打开商城",
+    chooseBmUser: "选择 BattleMetrics 用户",
+    chooseBmHint: "重名时请手动确认，确认后再加载服务器时长。",
+    reselect: "重新选择",
+    noBmCandidatesTitle: "服务器时长需要确认 BattleMetrics 用户",
+    noBmCandidatesHint: "当前没有候选可选。你可以重新查询或检查 BattleMetrics Token。",
+    candidateScore: "候选分数",
+    sessionPreview: "会话预览",
+    recentSeen: "最近出现",
+    noRecentSeen: "无最近记录",
+    selectedNow: "当前已选择",
+    selectOneFirst: "先从上面选择一个用户",
+    loadingSelectedServer: "正在加载所选 BattleMetrics 用户的服务器时长...",
+    loadSelectedServer: "加载所选用户服务器时长",
+    totalPlaytime: "总游玩时长",
+    approxDays: "≈ {value} 天",
+    totalSessions: "共 {value} 次会话",
+    servers: "服务器",
+    sessions: "次会话",
+    onlinePlayers: "在线 {value}",
+    offlineShort: "离线",
+    timesShort: "次",
+    noBmFound: "没有找到可确认的 BattleMetrics 用户",
+    bmSearchFailed: "BattleMetrics 候选搜索失败",
+    serverLoadFailed: "服务器时长加载失败",
+    requestFailed: "请求失败",
+    loading: "加载中",
+    english: "English",
+    chinese: "中文",
+  },
+  en: {
+    appTitle: "Rust Player Query",
+    appSubtitle: "KDA · INVENTORY · PLAYTIME",
+    language: "Language",
+    queryPlaceholder: "Steam ID64 / Custom URL / Vanity name...",
+    queryButton: "Search",
+    querying: "Loading player data...",
+    emptyTitle: "Enter a Steam ID to begin",
+    emptyHint: "Supports SteamID64 / Custom URL / Vanity name",
+    demoNotice: "⚡ Demo mode — backend unavailable. Run python rust_query_server_v2.py to enable live queries.",
+    kdaTab: "KDA",
+    inventoryTab: "Inventory",
+    serversTab: "Server Time",
+    playerCreated: "Created",
+    online: "Online",
+    inGame: "In Game",
+    offline: "Offline",
+    demoStatus: "Demo",
+    rustHours: "Rust Hours",
+    recentTwoWeeks: "Last 2 Weeks",
+    unlockedAchievements: "Achievements",
+    inventoryValue: "Inventory Value",
+    serverPlaytime: "Server Time",
+    accountAge: "Account Age",
+    recentActive: "Last Active",
+    profileOverview: "Profile Overview",
+    profileOverviewValue: "Steam profile data + Rust stats mapping",
+    compositeScore: "Composite Score",
+    compositeScoreNote: "Local profile score based on KD, headshot rate, Rust hours, server time, and inventory value.",
+    kdRating: "KD Rating",
+    accuracyFormula: "Accuracy = Player bullet hits ÷ bullets fired",
+    headshotFormula: "Headshot Rate = headshots ÷ player bullet hits",
+    combatOverview: "Combat Overview",
+    totalAssetValue: "Account Asset Value",
+    tradable: "Tradable",
+    storeOwnedValue: "Official Store Match Value",
+    inventoryUnavailable: "Inventory valuation unavailable",
+    storeUnavailable: "Store catalog unavailable",
+    inventoryWorth: "Inventory Value",
+    steamWebOnly: "Steam Web Only",
+    scmmPriced: "SCMM Priced",
+    currentStore: "Official Store",
+    nonTradableValue: "Non-tradable Value",
+    matchedCount: "Matched",
+    currentStoreMatched: "Current store matches",
+    allAssets: "All Assets",
+    storeCatalog: "Official Store Catalog",
+    mergedInventory: "Merged Inventory",
+    steamOnlyAssets: "Steam Web-only Assets",
+    sortByPrice: "Sort by Price",
+    sortByName: "Sort by Name",
+    accountBound: "Account Bound",
+    unpriced: "Unpriced",
+    inventoryItem: "Inventory Item",
+    storeItem: "Store Item",
+    hitInInventory: "Matched in inventory",
+    notHitInInventory: "Not matched in inventory",
+    scmmAvailable: "SCMM priceable",
+    steamWebExclusive: "Steam web only",
+    openStore: "Open Store",
+    chooseBmUser: "Choose a BattleMetrics User",
+    chooseBmHint: "When names collide, pick the correct profile first, then load server playtime.",
+    reselect: "Choose Again",
+    noBmCandidatesTitle: "Server playtime needs a BattleMetrics identity",
+    noBmCandidatesHint: "No candidates are available right now. Re-run the query or check the BattleMetrics token.",
+    candidateScore: "Candidate Score",
+    sessionPreview: "Session Preview",
+    recentSeen: "Recently Seen",
+    noRecentSeen: "No recent record",
+    selectedNow: "Selected",
+    selectOneFirst: "Select one candidate above first",
+    loadingSelectedServer: "Loading server playtime for the selected BattleMetrics user...",
+    loadSelectedServer: "Load Selected Server Time",
+    totalPlaytime: "Total Playtime",
+    approxDays: "≈ {value} days",
+    totalSessions: "{value} sessions",
+    servers: "Servers",
+    sessions: "Sessions",
+    onlinePlayers: "Online {value}",
+    offlineShort: "Offline",
+    timesShort: "times",
+    noBmFound: "No BattleMetrics candidates were found",
+    bmSearchFailed: "BattleMetrics candidate search failed",
+    serverLoadFailed: "Failed to load server playtime",
+    requestFailed: "Request failed",
+    loading: "Loading",
+    english: "English",
+    chinese: "中文",
+  },
+};
+
+const DATA_TEXT_EN = {
+  "医疗": "Medical",
+  "击杀分布": "Kill Breakdown",
+  "死亡分布": "Death Breakdown",
+  "采集": "Gathering",
+  "霰弹枪命中": "Shotgun Hits",
+  "弓箭命中": "Arrow Hits",
+  "击杀": "Kills",
+  "死亡": "Deaths",
+  "子弹发射": "Bullets Fired",
+  "子弹命中": "Bullet Hits",
+  "子弹爆头": "Headshots",
+  "受伤": "Wounded",
+  "救助玩家": "Revives",
+  "自愈": "Self Heal",
+  "自伤": "Self Damage",
+  "玩家": "Players",
+  "科学家": "Scientists",
+  "狼": "Wolves",
+  "熊": "Bears",
+  "野猪": "Boars",
+  "鹿": "Stags",
+  "马": "Horses",
+  "鸡": "Chickens",
+  "总死亡": "Total Deaths",
+  "自杀": "Suicides",
+  "跌落致死": "Fall Deaths",
+  "环境死亡": "Environment",
+  "被狼击杀": "Killed by Wolves",
+  "被熊击杀": "Killed by Bears",
+  "金属矿石": "Metal Ore",
+  "石头": "Stone",
+  "木头": "Wood",
+  "废料": "Scrap",
+  "低级燃料": "Low Grade Fuel",
+  "布": "Cloth",
+  "皮革": "Leather",
+  "骨片": "Bone Fragments",
+  "动物脂肪": "Animal Fat",
+  "霰弹发射": "Shells Fired",
+  "总命中": "Total Hits",
+  "建筑": "Buildings",
+  "弓箭发射": "Arrows Fired",
+  "其他": "Other",
+  "火箭发射": "Rockets Fired",
+  "查看箱子": "Containers Opened",
+  "物品掉落": "Items Dropped",
+  "摧毁油桶": "Barrels Destroyed",
+  "学习蓝图": "Blueprints Learned",
+  "制作界面": "Craft Menu Opens",
+  "建筑建造": "Blocks Placed",
+  "建筑升级": "Blocks Upgraded",
+  "骑马距离(km)": "Horse Distance (km)",
+  "近战攻击": "Melee Strikes",
+  "近战投掷": "Thrown Melee",
+  "消耗卡路里": "Calories Consumed",
+  "消耗水量": "Water Consumed",
+  "PVP": "PVP",
+  "KD": "KD",
+  "爆头率": "Headshot Rate",
+  "准确率": "Accuracy",
+  "玩家子弹命中": "Player Bullet Hits",
+};
+
+const translateText = (lang, text) => lang === "zh" ? text : (DATA_TEXT_EN[text] || text);
+const translateSectionTitle = (lang, section) => {
+  if (lang === "zh") return section.title;
+  if (section.id === "misc") return "Other Stats";
+  return DATA_TEXT_EN[section.title] || section.title;
+};
+const translateStatus = (lang, status) => {
+  if (lang === "zh") {
+    return ({
+      "Online": "在线",
+      "In Game": "游戏中",
+      "Offline": "离线",
+      "Demo": "演示模式",
+    })[status] || status;
+  }
+  return ({
+    "在线": "Online",
+    "游戏中": "In Game",
+    "离线": "Offline",
+    "演示模式": "Demo",
+  })[status] || status;
+};
+const translateRarity = (lang, rarity) => lang === "zh" ? (rarityLabel[rarity] || rarity) : (rarityLabelEn[rarity] || rarity);
+const pickDisplayName = (item, lang) => lang === "zh" ? (item?.nameCN || item?.name || "—") : (item?.name || item?.nameCN || "—");
+const replaceVars = (template, vars = {}) => String(template || "").replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 
 // ─── Demo Data ───
 const DEMO_DLC = [
@@ -63,7 +367,7 @@ const DEMO = {
       {id:"medical",title:"医疗",emoji:"🩹",color:"#66bb6a",items:[{id:"wounded",label:"受伤",value:1289,icon:"🩸"},{id:"assisted",label:"救助玩家",value:88,icon:"💉"},{id:"healed",label:"自愈",value:412,icon:"🧰"},{id:"selfInflicted",label:"自伤",value:43,icon:"⚠️"}]},
       {id:"kills",title:"击杀分布",emoji:"🐾",color:"#ff7043",items:[{id:"player",label:"玩家",value:3847,icon:"🧍"},{id:"scientist",label:"科学家",value:782,icon:"🧪"},{id:"wolf",label:"狼",value:56,icon:"🐺"},{id:"bear",label:"熊",value:45,icon:"🐻"},{id:"boar",label:"野猪",value:123,icon:"🐗"},{id:"stag",label:"鹿",value:87,icon:"🦌"},{id:"horse",label:"马",value:31,icon:"🐎"},{id:"chicken",label:"鸡",value:234,icon:"🐔"}]},
       {id:"deaths",title:"死亡分布",emoji:"☠️",color:"#b0bec5",items:[{id:"total",label:"总死亡",value:2156,icon:"💀"},{id:"suicide",label:"自杀",value:93,icon:"🪦"},{id:"fall",label:"跌落致死",value:146,icon:"🧗"},{id:"entity",label:"环境死亡",value:207,icon:"🌩️"},{id:"wolf",label:"被狼击杀",value:18,icon:"🐺"},{id:"bear",label:"被熊击杀",value:6,icon:"🐻"}]},
-      {id:"resources",title:"采集",emoji:"⛏️",color:"#26a69a",items:[{id:"metalOre",label:"金属矿石",value:189400,icon:"🪨"},{id:"stone",label:"石头",value:876200,icon:"🧱"},{id:"wood",label:"木头",value:1542300,icon:"🪵"},{id:"scrap",label:"废料",value:18340,icon:"🧲"},{id:"lowGradeFuel",label:"低级燃料",value:7520,icon:"🛢️"},{id:"cloth",label:"布",value:234500,icon:"🧶"},{id:"leather",label:"皮革",value:98320,icon:"🧥"},{id:"sulfurOre",label:"硫磺矿石",value:84210,icon:"💛"},{id:"boneFragments",label:"骨片",value:6410,icon:"🦴"},{id:"animalFat",label:"动物脂肪",value:7850,icon:"🥩"}]},
+      {id:"resources",title:"采集",emoji:"⛏️",color:"#26a69a",items:[{id:"metalOre",label:"金属矿石",value:189400,icon:"🪨"},{id:"stone",label:"石头",value:876200,icon:"🧱"},{id:"wood",label:"木头",value:1542300,icon:"🪵"},{id:"scrap",label:"废料",value:18340,icon:"🧲"},{id:"lowGradeFuel",label:"低级燃料",value:7520,icon:"🛢️"},{id:"cloth",label:"布",value:234500,icon:"🧶"},{id:"leather",label:"皮革",value:98320,icon:"🧥"},{id:"boneFragments",label:"骨片",value:6410,icon:"🦴"},{id:"animalFat",label:"动物脂肪",value:7850,icon:"🥩"}]},
       {id:"shotgun",title:"霰弹枪命中",emoji:"💥",color:"#8d6e63",items:[{id:"fired",label:"霰弹发射",value:4312,icon:"🔫"},{id:"hitsTotal",label:"总命中",value:1883,icon:"🎯"},{id:"hitsPlayer",label:"玩家",value:706,icon:"🧍"},{id:"hitsBuilding",label:"建筑",value:339,icon:"🏠"},{id:"hitsHorse",label:"马",value:41,icon:"🐎"}]},
       {id:"arrow",title:"弓箭命中",emoji:"🏹",color:"#7cb342",items:[{id:"fired",label:"弓箭发射",value:12543,icon:"🏹"},{id:"hitsPlayer",label:"玩家",value:1488,icon:"🧍"},{id:"hitsWolf",label:"狼",value:315,icon:"🐺"},{id:"hitsBear",label:"熊",value:152,icon:"🐻"},{id:"hitsBoar",label:"野猪",value:520,icon:"🐗"},{id:"hitsStag",label:"鹿",value:987,icon:"🦌"},{id:"hitsHorse",label:"马",value:102,icon:"🐎"},{id:"hitsChicken",label:"鸡",value:638,icon:"🐔"},{id:"hitsBuilding",label:"建筑",value:1404,icon:"🏠"}]},
       {id:"bullet",title:"子弹命中",emoji:"🔸",color:"#42a5f5",items:[{id:"fired",label:"子弹发射",value:89432,icon:"🔫"},{id:"hitsPlayer",label:"玩家",value:9211,icon:"🧍"},{id:"hitsWolf",label:"狼",value:249,icon:"🐺"},{id:"hitsBear",label:"熊",value:421,icon:"🐻"},{id:"hitsBoar",label:"野猪",value:736,icon:"🐗"},{id:"hitsStag",label:"鹿",value:518,icon:"🦌"},{id:"hitsHorse",label:"马",value:127,icon:"🐎"},{id:"hitsBuilding",label:"建筑",value:3348,icon:"🏠"},{id:"hitsOther",label:"其他",value:1920,icon:"📦"}]},
@@ -100,7 +404,7 @@ const DEMO = {
 };
 
 // ─── Sub Components ───
-function StatCard({icon,label,value,color,sub}) {
+function StatCard({icon,label,value,color}) {
   const [h,setH]=useState(false);
   return (
     <div onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)} style={{background:h?`${color}0d`:"rgba(255,255,255,.025)",borderRadius:14,padding:"16px 14px",textAlign:"center",border:`1px solid ${h?color+"44":"rgba(255,255,255,.04)"}`,transition:"all .25s",cursor:"default",position:"relative",overflow:"hidden",minHeight:118}}>
@@ -160,7 +464,7 @@ function StatsSection({section, layout="grid", formatValue=fmtMetric}) {
   );
 }
 
-function KdaProfileCard({player,inventory,servers,summary}) {
+function KdaProfileCard({player,inventory,servers,summary,lang,locale,t}) {
   const totalValue = inventory?.totalSummary?.totalValue;
   const serverHours = servers?.summary?.totalHours;
   const score = Math.min(100, Math.round(
@@ -176,46 +480,58 @@ function KdaProfileCard({player,inventory,servers,summary}) {
       <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
         {player?.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:62,height:62,borderRadius:16,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:62,height:62,borderRadius:16,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,fontWeight:800,color:"#fff"}}>{player?.name?.[0]?.toUpperCase()||"?"}</div>}
         <div style={{minWidth:0}}>
-          <div style={{fontSize:"clamp(17px,2vw,21px)",fontWeight:800,color:"#eceff1",overflowWrap:"anywhere"}}>{player?.name||"玩家画像"}</div>
+          <div style={{fontSize:"clamp(17px,2vw,21px)",fontWeight:800,color:"#eceff1",overflowWrap:"anywhere"}}>{player?.name || (lang === "zh" ? "玩家画像" : "Player Profile")}</div>
           <div style={{fontSize:11,color:"#546e7a",fontFamily:"'JetBrains Mono',monospace",overflowWrap:"anywhere"}}>{player?.steamId||"—"}</div>
-          <div style={{fontSize:11,color:"#90a4ae",marginTop:4,lineHeight:1.4}}>{player?.country||"—"} · 创建于 {fmtDate(player?.created)}</div>
+          <div style={{fontSize:11,color:"#90a4ae",marginTop:4,lineHeight:1.4}}>{player?.country||"—"} · {t("playerCreated")} {fmtDate(player?.created, locale)}</div>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10}}>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(66,165,245,.08)",border:"1px solid rgba(66,165,245,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>Rust 总时长</div><div style={{fontSize:20,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeHours)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,193,7,.08)",border:"1px solid rgba(255,193,7,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>最近两周</div><div style={{fontSize:20,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeTwoWeeksHours)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(239,83,80,.08)",border:"1px solid rgba(239,83,80,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>已解锁成就</div><div style={{fontSize:20,fontWeight:800,color:"#ef5350",fontFamily:"'JetBrains Mono',monospace"}}>{fmtFull(player?.achievementsCount)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(102,187,106,.08)",border:"1px solid rgba(102,187,106,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>库存估值</div><div style={{fontSize:20,fontWeight:800,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{totalValue==null?"—":`$${totalValue.toFixed(2)}`}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(171,71,188,.08)",border:"1px solid rgba(171,71,188,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>服务器时长</div><div style={{fontSize:20,fontWeight:800,color:"#ce93d8",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(serverHours)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(121,134,203,.08)",border:"1px solid rgba(121,134,203,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>账号年龄</div><div style={{fontSize:20,fontWeight:800,color:"#9fa8da",fontFamily:"'JetBrains Mono',monospace"}}>{yearsSince(player?.created)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(66,165,245,.08)",border:"1px solid rgba(66,165,245,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("rustHours")}</div><div style={{fontSize:20,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeHours, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,193,7,.08)",border:"1px solid rgba(255,193,7,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentTwoWeeks")}</div><div style={{fontSize:20,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtHours(player?.playtimeTwoWeeksHours, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(239,83,80,.08)",border:"1px solid rgba(239,83,80,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("unlockedAchievements")}</div><div style={{fontSize:20,fontWeight:800,color:"#ef5350",fontFamily:"'JetBrains Mono',monospace"}}>{fmtFull(player?.achievementsCount, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(102,187,106,.08)",border:"1px solid rgba(102,187,106,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("inventoryValue")}</div><div style={{fontSize:20,fontWeight:800,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(totalValue, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(171,71,188,.08)",border:"1px solid rgba(171,71,188,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("serverPlaytime")}</div><div style={{fontSize:20,fontWeight:800,color:"#ce93d8",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(serverHours, lang, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(121,134,203,.08)",border:"1px solid rgba(121,134,203,.18)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("accountAge")}</div><div style={{fontSize:20,fontWeight:800,color:"#9fa8da",fontFamily:"'JetBrains Mono',monospace"}}>{yearsSince(player?.created, lang, locale)}</div></div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>最近活跃</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35,overflowWrap:"anywhere"}}>{fmtDateTime(player?.lastLogoffAt||player?.lastLogoff)}</div></div>
-        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>Profile 概览</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35}}>官方 Steam 数据 + Rust Stats 映射</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("recentActive")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35,overflowWrap:"anywhere"}}>{fmtDateTime(player?.lastLogoffAt||player?.lastLogoff, locale)}</div></div>
+        <div style={{padding:"12px",borderRadius:12,background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)"}}><div style={{fontSize:10,color:"#78909c"}}>{t("profileOverview")}</div><div style={{fontSize:15,fontWeight:700,color:"#eceff1",lineHeight:1.35}}>{t("profileOverviewValue")}</div></div>
       </div>
       <div style={{padding:"14px 16px",borderRadius:14,background:"linear-gradient(135deg,rgba(205,65,43,.12),rgba(255,193,7,.06))",border:"1px solid rgba(205,65,43,.18)"}}>
-        <div style={{fontSize:10,color:"#78909c",letterSpacing:1.4,textTransform:"uppercase",marginBottom:6}}>综合评分</div>
+        <div style={{fontSize:10,color:"#78909c",letterSpacing:1.4,textTransform:"uppercase",marginBottom:6}}>{t("compositeScore")}</div>
         <div style={{display:"flex",alignItems:"baseline",gap:10}}>
           <div style={{fontSize:34,fontWeight:900,color:"#ff7043",fontFamily:"'JetBrains Mono',monospace"}}>{score}</div>
           <div style={{fontSize:12,color:"#b0bec5"}}>/ 100</div>
         </div>
-        <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>基于 KD、爆头率、Rust 时长、服务器时长和库存估值的本地画像分。</div>
+        <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>{t("compositeScoreNote")}</div>
       </div>
     </div>
   );
 }
 
 // ─── KDA Panel ───
-function KDAPanel({data,player,inventory,servers}) {
+function KDAPanel({data,player,inventory,servers,lang,locale,t}) {
   if(data.error) return <ErrorBox msg={data.error}/>;
   const s=data.summary;
   const kc=s.kdRatio>=3?"#66bb6a":s.kdRatio>=1.5?"#ffa726":"#ef5350";
-  const rating=s.kdRatio>=4?"🏆 传奇猎手":s.kdRatio>=2.5?"⚔️ 精英战士":s.kdRatio>=1.5?"🛡️ 老练玩家":s.kdRatio>=1?"🎯 合格战士":"🌱 成长中";
+  const rating = lang === "zh"
+    ? (s.kdRatio>=4?"🏆 传奇猎手":s.kdRatio>=2.5?"⚔️ 精英战士":s.kdRatio>=1.5?"🛡️ 老练玩家":s.kdRatio>=1?"🎯 合格战士":"🌱 成长中")
+    : (s.kdRatio>=4?"🏆 Legendary Hunter":s.kdRatio>=2.5?"⚔️ Elite Fighter":s.kdRatio>=1.5?"🛡️ Seasoned Player":s.kdRatio>=1?"🎯 Solid Fighter":"🌱 Rising");
   const sections=data.sections||[];
+  const localizedSections = lang === "zh"
+    ? sections
+    : sections.map((section)=>({
+        ...section,
+        title: translateSectionTitle(lang, section),
+        items: (section.items || []).map((item)=>({
+          ...item,
+          label: translateText(lang, item.label),
+        })),
+      }));
   return (
     <div style={{animation:"fadeIn .5s ease"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(360px,1fr))",gap:16,marginBottom:18,alignItems:"stretch"}}>
-        <KdaProfileCard player={player} inventory={inventory} servers={servers} summary={s}/>
+        <KdaProfileCard player={player} inventory={inventory} servers={servers} summary={s} lang={lang} locale={locale} t={t}/>
         <div style={{background:`linear-gradient(135deg,${kc}12,rgba(30,30,50,.4))`,borderRadius:18,padding:"24px 28px",border:`1px solid ${kc}22`,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:22,flexWrap:"wrap"}}>
             <div style={{position:"relative",width:80,height:80}}>
@@ -223,46 +539,46 @@ function KDAPanel({data,player,inventory,servers}) {
               <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:900,color:kc,fontFamily:"'JetBrains Mono',monospace"}}>{s.kdRatio}</div>
             </div>
             <div style={{flex:1}}>
-              <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>KD 综合评级</div>
+              <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>{t("kdRating")}</div>
               <div style={{fontSize:"clamp(22px,2.4vw,30px)",fontWeight:800,color:"#eceff1"}}>{rating}</div>
               <div style={{fontSize:12,color:"#78909c",marginTop:4,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.5}}>
-                {fmtFull(s.kills)} 击杀 · {fmtFull(s.deaths)} 死亡 · {fmtFull(s.headshots)} 爆头
+                {fmtFull(s.kills, locale)} {translateText(lang, "击杀")} · {fmtFull(s.deaths, locale)} {translateText(lang, "死亡")} · {fmtFull(s.headshots, locale)} {lang === "zh" ? "爆头" : "headshots"}
               </div>
               <div style={{fontSize:11,color:"#90a4ae",marginTop:6,lineHeight:1.5}}>
-                准确率 = 玩家子弹命中 ÷ 子弹发射
+                {t("accuracyFormula")}
                 <br/>
-                爆头率 = 爆头次数 ÷ 玩家子弹命中
+                {t("headshotFormula")}
               </div>
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginTop:20}}>
-            <StatCard icon="💀" label="击杀" value={fmtFull(s.kills)} color="#ef5350"/>
-            <StatCard icon="☠️" label="死亡" value={fmtFull(s.deaths)} color="#78909c"/>
-            <StatCard icon="🎯" label="爆头次数/击杀" value={`${fmtFull(s.headshots)} / ${fmtFull(s.kills)}`} color="#ab47bc"/>
+            <StatCard icon="💀" label={translateText(lang, "击杀")} value={fmtFull(s.kills, locale)} color="#ef5350"/>
+            <StatCard icon="☠️" label={translateText(lang, "死亡")} value={fmtFull(s.deaths, locale)} color="#78909c"/>
+            <StatCard icon="🎯" label={lang === "zh" ? "爆头次数/击杀" : "Headshots / Kills"} value={`${fmtFull(s.headshots, locale)} / ${fmtFull(s.kills, locale)}`} color="#ab47bc"/>
             <StatCard icon="📊" label="KD" value={s.kdRatio} color={kc}/>
-            <StatCard icon="🔫" label="准确率" value={fmtPercent(s.accuracy)} color="#42a5f5"/>
-            <StatCard icon="🧠" label="爆头率" value={fmtPercent(s.headshotRate)} color="#ab47bc"/>
-            <StatCard icon="🚀" label="火箭发射" value={fmtFull(s.rocketsFired)} color="#ff7043"/>
+            <StatCard icon="🔫" label={translateText(lang, "准确率")} value={fmtPercent(s.accuracy, locale)} color="#42a5f5"/>
+            <StatCard icon="🧠" label={translateText(lang, "爆头率")} value={fmtPercent(s.headshotRate, locale)} color="#ab47bc"/>
+            <StatCard icon="🚀" label={translateText(lang, "火箭发射")} value={fmtFull(s.rocketsFired, locale)} color="#ff7043"/>
           </div>
         </div>
       </div>
       <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"16px 18px",border:"1px solid rgba(255,255,255,.05)",marginBottom:18}}>
-        <SectionTitle emoji="📌" title="战斗总览"/>
+        <SectionTitle emoji="📌" title={t("combatOverview")}/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8}}>
           {[
-            ["🔫","子弹发射",fmtFull(s.bulletsFired)],
-            ["🎯","玩家子弹命中",fmtFull(s.bulletsHitPlayer)],
-            ["💥","子弹总命中",fmtFull(s.bulletsHit)],
-            ["🏹","弓箭发射",fmtFull(s.arrowsFired)],
-            ["🧨","霰弹发射",fmtFull(s.shotgunFired)],
-            ["🚀","火箭发射",fmtFull(s.rocketsFired)],
-            ["🧠","爆头率",fmtPercent(s.headshotRate)],
-            ["📏","准确率",fmtPercent(s.accuracy)],
+            ["🔫",translateText(lang, "子弹发射"),fmtFull(s.bulletsFired, locale)],
+            ["🎯",translateText(lang, "玩家子弹命中"),fmtFull(s.bulletsHitPlayer, locale)],
+            ["💥",lang === "zh" ? "子弹总命中" : "Total Bullet Hits",fmtFull(s.bulletsHit, locale)],
+            ["🏹",translateText(lang, "弓箭发射"),fmtFull(s.arrowsFired, locale)],
+            ["🧨",translateText(lang, "霰弹发射"),fmtFull(s.shotgunFired, locale)],
+            ["🚀",translateText(lang, "火箭发射"),fmtFull(s.rocketsFired, locale)],
+            ["🧠",translateText(lang, "爆头率"),fmtPercent(s.headshotRate, locale)],
+            ["📏",translateText(lang, "准确率"),fmtPercent(s.accuracy, locale)],
           ].map(([i,l,v],x)=><MiniStat key={x} icon={i} label={l} value={v}/>)}
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr",gap:14}}>
-        {sections.map((section)=><StatsSection key={section.id} section={section} layout="flow" formatValue={fmtFull}/>)}
+        {localizedSections.map((section)=><StatsSection key={section.id} section={section} layout="flow" formatValue={(value)=>fmtFull(value, locale)}/>)}
       </div>
     </div>
   );
@@ -271,7 +587,7 @@ function KDAPanel({data,player,inventory,servers}) {
 // ═══════════════════════════════════════════════════
 //  库存面板
 // ═══════════════════════════════════════════════════
-function InventoryPanel({data}) {
+function InventoryPanel({data,lang,locale,t}) {
   if(data.error) return <ErrorBox msg={data.error}/>;
   const [view,setView]=useState("all"); // all | steamOnly | store
   const [sortBy,setSortBy]=useState("price");
@@ -282,11 +598,11 @@ function InventoryPanel({data}) {
   const skins=data.skins||[];
   const storeCatalog=data.storeCatalog||[];
   const filteredSkins=skins.filter((item)=>view==="steamOnly"?!String(item.source||"").includes("scmm"):true);
-  const sortedSkins=[...filteredSkins].sort((a,b)=>sortBy==="name"?(a.nameCN||a.name).localeCompare(b.nameCN||b.name,"zh-CN"):(b.price||0)-(a.price||0));
+  const sortedSkins=[...filteredSkins].sort((a,b)=>sortBy==="name"?pickDisplayName(a, lang).localeCompare(pickDisplayName(b, lang), locale):(b.price||0)-(a.price||0));
   const sortedStore=[...storeCatalog].sort((a,b)=>{
     const ownedDelta=Number(Boolean(b.owned))-Number(Boolean(a.owned));
     if(ownedDelta) return ownedDelta;
-    return (a.nameCN||a.name).localeCompare(b.nameCN||b.name,"zh-CN");
+    return pickDisplayName(a, lang).localeCompare(pickDisplayName(b, lang), locale);
   });
 
   return (
@@ -295,46 +611,46 @@ function InventoryPanel({data}) {
       <div style={{background:"linear-gradient(135deg,rgba(255,193,7,.08),rgba(30,30,50,.4))",borderRadius:18,padding:"22px 26px",marginBottom:18,border:"1px solid rgba(255,193,7,.12)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:14,flexWrap:"wrap",gap:12}}>
           <div>
-            <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>账号总资产价值</div>
-            <div style={{fontSize:"clamp(30px,4vw,44px)",fontWeight:900,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.totalValue)}</div>
+            <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>{t("totalAssetValue")}</div>
+            <div style={{fontSize:"clamp(30px,4vw,44px)",fontWeight:900,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.totalValue, locale)}</div>
           </div>
           <div style={{display:"flex",gap:18,flexWrap:"wrap",justifyContent:"flex-end"}}>
             <div style={{textAlign:"right"}}>
-              <div style={{fontSize:11,color:"#78909c"}}>可交易</div>
-              <div style={{fontSize:18,fontWeight:700,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.tradableValue)}</div>
+              <div style={{fontSize:11,color:"#78909c"}}>{t("tradable")}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#66bb6a",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(ts.tradableValue, locale)}</div>
             </div>
             <div style={{textAlign:"right"}}>
-              <div style={{fontSize:11,color:"#78909c"}}>官方商城命中价值</div>
-              <div style={{fontSize:18,fontWeight:700,color:"#ab47bc",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(storeSummary.ownedValue)}</div>
+              <div style={{fontSize:11,color:"#78909c"}}>{t("storeOwnedValue")}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#ab47bc",fontFamily:"'JetBrains Mono',monospace"}}>{fmtMoney(storeSummary.ownedValue, locale)}</div>
             </div>
           </div>
         </div>
         {ss.error&&(
           <div style={{marginBottom:12,padding:"10px 12px",borderRadius:12,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.16)",color:"#ffcc80",fontSize:12,lineHeight:1.5}}>
-            {ss.error&&<div>库存估值不可用：{ss.error}</div>}
+            {ss.error&&<div>{t("inventoryUnavailable")}：{ss.error}</div>}
           </div>
         )}
         {storeSummary.error&&(
           <div style={{marginBottom:12,padding:"10px 12px",borderRadius:12,background:"rgba(66,165,245,.08)",border:"1px solid rgba(66,165,245,.16)",color:"#90caf9",fontSize:12,lineHeight:1.5}}>
-            商城目录不可用：{storeSummary.error}
+            {t("storeUnavailable")}：{storeSummary.error}
           </div>
         )}
         {/* Value breakdown */}
         <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-          <ValueChip label="库存价值" value={fmtMoney(ts.skinsValue)} color="#ffa726" count={`${fmtFull(ss.totalItems||0)}件 / ${fmtFull(ss.distinctItems||0)}种`}/>
-          <ValueChip label="Steam 网页独有" value={fmtFull(ss.steamWebOnlyDistinct||0)} color="#42a5f5" count={`${fmtFull(ss.steamWebOnlyItems||0)}件`}/>
-          <ValueChip label="SCMM 已定价" value={fmtFull(ss.pricedByScmmDistinct||0)} color="#66bb6a" count={`${fmtFull(ss.pricedByScmmItems||0)}件`}/>
-          <ValueChip label="当前官方商城" value={fmtFull(storeSummary.totalItems||0)} color="#ab47bc" count={`已匹配 ${fmtFull(storeSummary.ownedCount||0)} 项`}/>
-          <ValueChip label="不可交易价值" value={fmtMoney(storeSummary.ownedValue)} color="#8e24aa" count={`当前商城命中`}/>
+          <ValueChip label={t("inventoryWorth")} value={fmtMoney(ts.skinsValue, locale)} color="#ffa726" count={lang==="zh"?`${fmtFull(ss.totalItems||0, locale)}件 / ${fmtFull(ss.distinctItems||0, locale)}种`:`${fmtFull(ss.totalItems||0, locale)} items / ${fmtFull(ss.distinctItems||0, locale)} unique`}/>
+          <ValueChip label={t("steamWebOnly")} value={fmtFull(ss.steamWebOnlyDistinct||0, locale)} color="#42a5f5" count={lang==="zh"?`${fmtFull(ss.steamWebOnlyItems||0, locale)}件`:`${fmtFull(ss.steamWebOnlyItems||0, locale)} items`}/>
+          <ValueChip label={t("scmmPriced")} value={fmtFull(ss.pricedByScmmDistinct||0, locale)} color="#66bb6a" count={lang==="zh"?`${fmtFull(ss.pricedByScmmItems||0, locale)}件`:`${fmtFull(ss.pricedByScmmItems||0, locale)} items`}/>
+          <ValueChip label={t("currentStore")} value={fmtFull(storeSummary.totalItems||0, locale)} color="#ab47bc" count={lang==="zh"?`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)} 项`:`${t("matchedCount")} ${fmtFull(storeSummary.ownedCount||0, locale)}`}/>
+          <ValueChip label={t("nonTradableValue")} value={fmtMoney(storeSummary.ownedValue, locale)} color="#8e24aa" count={t("currentStoreMatched")}/>
           {Object.entries(ss.rarityCounts||{}).map(([r,c])=>(
-            <div key={r} style={{padding:"3px 10px",borderRadius:12,background:RC[r]?.bg,border:`1px solid ${RC[r]?.bd}44`,fontSize:11,color:RC[r]?.tx,fontWeight:600}}>{rarityLabel[r]||r} ×{c}</div>
+            <div key={r} style={{padding:"3px 10px",borderRadius:12,background:RC[r]?.bg,border:`1px solid ${RC[r]?.bd}44`,fontSize:11,color:RC[r]?.tx,fontWeight:600}}>{translateRarity(lang, r)} ×{c}</div>
           ))}
         </div>
       </div>
 
       {/* ── View Tabs ── */}
       <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-        {[["all","全部资产",ts.totalItems||0],["steamOnly","Steam 网页独有",ss.steamWebOnlyDistinct||0],["store","官方商城目录",storeSummary.totalItems||0]].map(([v,l,n])=>(
+        {[["all",t("allAssets"),ts.totalItems||0],["steamOnly",t("steamWebOnly"),ss.steamWebOnlyDistinct||0],["store",t("storeCatalog"),storeSummary.totalItems||0]].map(([v,l,n])=>(
           <button key={v} onClick={()=>setView(v)} style={{
             padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
             background:view===v?"rgba(255,193,7,.12)":"rgba(255,255,255,.03)",
@@ -346,32 +662,36 @@ function InventoryPanel({data}) {
       {/* ── Skins Section ── */}
       {(view==="all"||view==="steamOnly")&&sortedSkins.length>0&&(
         <div>
-          <SectionTitle emoji="🎨" title={view==="steamOnly"?`Steam 网页独有资产 (${fmtFull(ss.steamWebOnlyDistinct||sortedSkins.length)}种)`:`合并库存 (${fmtFull(ss.totalItems||0)}件 / ${fmtFull(ss.distinctItems||sortedSkins.length)}种)`}/>
+          <SectionTitle emoji="🎨" title={view==="steamOnly"
+            ? `${t("steamOnlyAssets")} (${lang==="zh"?`${fmtFull(ss.steamWebOnlyDistinct||sortedSkins.length, locale)}种`:`${fmtFull(ss.steamWebOnlyDistinct||sortedSkins.length, locale)} unique`})`
+            : `${t("mergedInventory")} (${lang==="zh"?`${fmtFull(ss.totalItems||0, locale)}件 / ${fmtFull(ss.distinctItems||sortedSkins.length, locale)}种`:`${fmtFull(ss.totalItems||0, locale)} items / ${fmtFull(ss.distinctItems||sortedSkins.length, locale)} unique`})`}/>
           <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-            {[["price","按价格"],["name","按名称"]].map(([v,l])=>(
+            {[["price",t("sortByPrice")],["name",t("sortByName")]].map(([v,l])=>(
               <button key={v} onClick={()=>setSortBy(v)} style={{padding:"5px 14px",borderRadius:8,border:"none",cursor:"pointer",background:sortBy===v?"rgba(255,193,7,.12)":"rgba(255,255,255,.03)",color:sortBy===v?"#ffc107":"#78909c",fontSize:12,fontWeight:600}}>{l}</button>
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {sortedSkins.map((item,i)=>{
               const rc=RC[item.rarity]||RC.common;
-              const sourceLabel=item.source==="steam-web+scmm"?"Steam 网页 + SCMM":item.source==="steam-web+market"?"Steam 网页 + 市场":item.source==="scmm-profile"?"SCMM":"Steam 网页";
+              const sourceLabel = lang === "zh"
+                ? (item.source==="steam-web+scmm"?"Steam 网页 + SCMM":item.source==="steam-web+market"?"Steam 网页 + 市场":item.source==="scmm-profile"?"SCMM":"Steam 网页")
+                : (item.source==="steam-web+scmm"?"Steam Web + SCMM":item.source==="steam-web+market"?"Steam Web + Market":item.source==="scmm-profile"?"SCMM":"Steam Web");
               return (
                 <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:rc.bg,borderRadius:12,border:`1px solid ${rc.bd}25`,transition:"all .2s",flexWrap:"wrap"}}>
                   {item.iconUrl?<img src={item.iconUrl} alt="" style={{width:42,height:42,borderRadius:8,background:"rgba(0,0,0,.3)"}}/>:<div style={{width:42,height:42,borderRadius:8,background:"rgba(0,0,0,.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🎨</div>}
                   <div style={{flex:1,minWidth:220}}>
-                    <div style={{fontSize:14,fontWeight:700,color:rc.tx,overflowWrap:"anywhere"}}>{item.nameCN||item.name}</div>
-                    {(item.nameCN&&item.nameCN!==item.name)&&<div style={{fontSize:11,color:"#78909c",marginTop:2,overflowWrap:"anywhere"}}>{item.name}</div>}
+                    <div style={{fontSize:14,fontWeight:700,color:rc.tx,overflowWrap:"anywhere"}}>{pickDisplayName(item, lang)}</div>
+                    {(item.nameCN&&item.nameCN!==item.name)&&<div style={{fontSize:11,color:"#78909c",marginTop:2,overflowWrap:"anywhere"}}>{lang==="zh" ? item.name : item.nameCN}</div>}
                     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
-                      <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>×{fmtFull(item.quantity||1)}</span>
-                      <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{item.type||"库存物品"}</span>
+                      <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>×{fmtFull(item.quantity||1, locale)}</span>
+                      <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{lang==="zh" ? (item.type || t("inventoryItem")) : (item.typeEN || item.type || t("inventoryItem"))}</span>
                       <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{sourceLabel}</span>
-                      {!item.tradable&&<span style={{fontSize:10,color:"#ffcc80",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,193,7,.18)"}}>账号绑定</span>}
+                      {!item.tradable&&<span style={{fontSize:10,color:"#ffcc80",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,193,7,.18)"}}>{t("accountBound")}</span>}
                     </div>
                   </div>
                   <div style={{fontSize:15,fontWeight:700,color:item.price>10?"#ffc107":"#78909c",fontFamily:"'JetBrains Mono',monospace",marginLeft:"auto",minWidth:120,textAlign:"right"}}>
-                    <div>{item.price>0?fmtMoney(item.price):"—"}</div>
-                    <div style={{fontSize:10,color:"#546e7a",marginTop:4}}>{item.priceSource||"未定价"}</div>
+                    <div>{item.price>0?fmtMoney(item.price, locale):"—"}</div>
+                    <div style={{fontSize:10,color:"#546e7a",marginTop:4}}>{item.priceSource||t("unpriced")}</div>
                   </div>
                 </div>
               );
@@ -382,22 +702,22 @@ function InventoryPanel({data}) {
 
       {(view==="all"||view==="store")&&sortedStore.length>0&&(
         <div style={{marginTop:view==="all"?18:0}}>
-          <SectionTitle emoji="🛍️" title={`当前官方商城目录 (${fmtFull(storeSummary.totalItems||sortedStore.length)}项，已在库存匹配 ${fmtFull(storeSummary.ownedCount||0)} 项)`}/>
+          <SectionTitle emoji="🛍️" title={`${t("storeCatalog")} (${lang==="zh"?`${fmtFull(storeSummary.totalItems||sortedStore.length, locale)}项，已在库存匹配 ${fmtFull(storeSummary.ownedCount||0, locale)} 项`:`${fmtFull(storeSummary.totalItems||sortedStore.length, locale)} items, ${fmtFull(storeSummary.ownedCount||0, locale)} matched in inventory`})`}/>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {sortedStore.map((item,i)=>(
               <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:item.owned?"rgba(102,187,106,.08)":"rgba(255,255,255,.02)",borderRadius:12,border:`1px solid ${item.owned?"rgba(102,187,106,.18)":"rgba(255,255,255,.05)"}`,flexWrap:"wrap"}}>
                 <div style={{flex:1,minWidth:220}}>
-                  <div style={{fontSize:14,fontWeight:700,color:item.owned?"#a5d6a7":"#eceff1",overflowWrap:"anywhere"}}>{item.nameCN||item.name}</div>
-                  {(item.nameCN&&item.nameCN!==item.name)&&<div style={{fontSize:11,color:"#78909c",marginTop:2,overflowWrap:"anywhere"}}>{item.name}</div>}
+                  <div style={{fontSize:14,fontWeight:700,color:item.owned?"#a5d6a7":"#eceff1",overflowWrap:"anywhere"}}>{pickDisplayName(item, lang)}</div>
+                  {(item.nameCN&&item.nameCN!==item.name)&&<div style={{fontSize:11,color:"#78909c",marginTop:2,overflowWrap:"anywhere"}}>{lang==="zh" ? item.name : item.nameCN}</div>}
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
-                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{item.category||"商城物品"}</span>
-                    <span style={{fontSize:10,color:item.owned?"#a5d6a7":"#78909c",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.owned?"rgba(102,187,106,.2)":"rgba(255,255,255,.08)"}`}}>{item.owned?"已在库存命中":"未在库存命中"}</span>
-                    <span style={{fontSize:10,color:item.scmmAvailable?"#66bb6a":"#42a5f5",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.scmmAvailable?"rgba(102,187,106,.18)":"rgba(66,165,245,.18)"}`}}>{item.scmmAvailable?"SCMM 可定价":"Steam 网页专属"}</span>
+                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{lang==="zh" ? (item.category||t("storeItem")) : (item.categoryEN || item.category || t("storeItem"))}</span>
+                    <span style={{fontSize:10,color:item.owned?"#a5d6a7":"#78909c",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.owned?"rgba(102,187,106,.2)":"rgba(255,255,255,.08)"}`}}>{item.owned?t("hitInInventory"):t("notHitInInventory")}</span>
+                    <span style={{fontSize:10,color:item.scmmAvailable?"#66bb6a":"#42a5f5",padding:"2px 8px",borderRadius:999,border:`1px solid ${item.scmmAvailable?"rgba(102,187,106,.18)":"rgba(66,165,245,.18)"}`}}>{item.scmmAvailable?t("scmmAvailable"):t("steamWebExclusive")}</span>
                   </div>
                 </div>
                 <div style={{marginLeft:"auto",textAlign:"right",minWidth:120}}>
                   <div style={{fontSize:15,fontWeight:800,color:"#ffc107",fontFamily:"'JetBrains Mono',monospace"}}>{item.priceText||"—"}</div>
-                  {item.storeUrl&&<a href={item.storeUrl} target="_blank" rel="noreferrer" style={{fontSize:11,color:"#64b5f6",textDecoration:"none"}}>打开商城</a>}
+                  {item.storeUrl&&<a href={item.storeUrl} target="_blank" rel="noreferrer" style={{fontSize:11,color:"#64b5f6",textDecoration:"none"}}>{t("openStore")}</a>}
                 </div>
               </div>
             ))}
@@ -419,7 +739,7 @@ function ValueChip({label,value,color,count}) {
 }
 
 // ─── Server Panel ───
-function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadSelected, onResetSelection, loading, error}) {
+function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadSelected, onResetSelection, loading, error, lang, locale, t}) {
   const candidates = candidatesPayload?.candidates || [];
   const selectedCandidate = candidates.find((candidate)=>candidate.bmId===selectedBmId) || null;
 
@@ -427,8 +747,8 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
   if(!data && candidates.length===0){
     return (
       <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"22px",border:"1px solid rgba(255,255,255,.05)"}}>
-        <div style={{fontSize:14,fontWeight:700,color:"#eceff1",marginBottom:8}}>服务器时长需要确认 BattleMetrics 用户</div>
-        <div style={{fontSize:12,color:"#78909c",lineHeight:1.6}}>当前没有候选可选。你可以重新查询或检查 BattleMetrics Token。</div>
+        <div style={{fontSize:14,fontWeight:700,color:"#eceff1",marginBottom:8}}>{t("noBmCandidatesTitle")}</div>
+        <div style={{fontSize:12,color:"#78909c",lineHeight:1.6}}>{t("noBmCandidatesHint")}</div>
       </div>
     );
   }
@@ -441,12 +761,12 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
         <div style={{background:"rgba(255,255,255,.02)",borderRadius:18,padding:"18px",marginBottom:18,border:"1px solid rgba(255,255,255,.05)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:14}}>
             <div>
-              <div style={{fontSize:14,fontWeight:700,color:"#eceff1"}}>选择 BattleMetrics 用户</div>
-              <div style={{fontSize:11,color:"#78909c",marginTop:4}}>重名时请手动确认，确认后再加载服务器时长。</div>
+              <div style={{fontSize:14,fontWeight:700,color:"#eceff1"}}>{t("chooseBmUser")}</div>
+              <div style={{fontSize:11,color:"#78909c",marginTop:4}}>{t("chooseBmHint")}</div>
             </div>
             {data&&(
               <button onClick={onResetSelection} style={{padding:"8px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#b0bec5",fontSize:12,cursor:"pointer"}}>
-                重新选择
+                {t("reselect")}
               </button>
             )}
           </div>
@@ -471,9 +791,9 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
                     <div style={{fontSize:11,color:"#546e7a",fontFamily:"'JetBrains Mono',monospace"}}>{candidate.bmId}</div>
                   </div>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>候选分数 {candidate.score ?? 0}</span>
-                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>会话预览 {candidate.sessionPreview?.count ?? 0}</span>
-                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{candidate.lastSeen?`最近出现 ${timeAgo(candidate.lastSeen)}`:"无最近记录"}</span>
+                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{t("candidateScore")} {candidate.score ?? 0}</span>
+                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{t("sessionPreview")} {candidate.sessionPreview?.count ?? 0}</span>
+                    <span style={{fontSize:10,color:"#90a4ae",padding:"2px 8px",borderRadius:999,border:"1px solid rgba(255,255,255,.08)"}}>{candidate.lastSeen?`${t("recentSeen")} ${timeAgo(candidate.lastSeen, lang)}`:t("noRecentSeen")}</span>
                   </div>
                 </div>
               </button>
@@ -481,7 +801,7 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
           </div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginTop:14}}>
             <div style={{fontSize:11,color:"#78909c"}}>
-              {selectedCandidate?`当前已选择：${selectedCandidate.name} (${selectedCandidate.bmId})`:"先从上面选择一个用户"}
+              {selectedCandidate?`${t("selectedNow")}：${selectedCandidate.name} (${selectedCandidate.bmId})`:t("selectOneFirst")}
             </div>
             <button
               onClick={onLoadSelected}
@@ -497,7 +817,7 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
                 fontWeight:700,
               }}
             >
-              {loading?"⏳ 加载中":"加载所选用户服务器时长"}
+              {loading?`⏳ ${t("loading")}`:t("loadSelectedServer")}
             </button>
           </div>
         </div>
@@ -505,19 +825,19 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
 
       {loading&&(
         <div style={{padding:"14px 16px",borderRadius:14,background:"rgba(33,150,243,.08)",border:"1px solid rgba(33,150,243,.16)",color:"#90caf9",fontSize:12,marginBottom:18}}>
-          正在加载所选 BattleMetrics 用户的服务器时长...
+          {t("loadingSelectedServer")}
         </div>
       )}
       {!data ? null : (
       <>
       <div style={{background:"linear-gradient(135deg,rgba(33,150,243,.08),rgba(30,30,50,.4))",borderRadius:18,padding:"24px 28px",marginBottom:20,border:"1px solid rgba(33,150,243,.12)"}}>
-        <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>总游玩时长</div>
+        <div style={{fontSize:11,color:"#78909c",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>{t("totalPlaytime")}</div>
         <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
-          <span style={{fontSize:"clamp(30px,4vw,46px)",fontWeight:900,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(sm.totalHours)}</span>
-          <span style={{fontSize:13,color:"#455a64",marginLeft:8}}>{sm.totalHours >= 24 ? `≈ ${sm.totalDays} 天` : `共 ${sm.totalSessions} 次会话`}</span>
+          <span style={{fontSize:"clamp(30px,4vw,46px)",fontWeight:900,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(sm.totalHours, lang, locale)}</span>
+          <span style={{fontSize:13,color:"#455a64",marginLeft:8}}>{sm.totalHours >= 24 ? replaceVars(t("approxDays"), { value: fmtFull(sm.totalDays, locale) }) : replaceVars(t("totalSessions"), { value: fmtFull(sm.totalSessions, locale) })}</span>
         </div>
         <div style={{display:"flex",gap:16,marginTop:10,fontSize:12,color:"#546e7a",flexWrap:"wrap"}}>
-          <span>🖥️ {sm.serverCount} 服务器</span><span>📋 {sm.totalSessions} 次会话</span>
+          <span>🖥️ {fmtFull(sm.serverCount, locale)} {t("servers")}</span><span>📋 {fmtFull(sm.totalSessions, locale)} {t("sessions")}</span>
         </div>
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -532,11 +852,11 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
                     <div style={{width:8,height:8,borderRadius:"50%",background:on?"#66bb6a":"#ef5350",boxShadow:on?"0 0 6px rgba(102,187,106,.5)":"none"}}/>
                     <span style={{fontSize:13,fontWeight:600,color:"#e0e0e0",overflowWrap:"anywhere"}}>{srv.name}</span>
                   </div>
-                  <span style={{fontSize:10,padding:"2px 8px",borderRadius:8,background:on?"rgba(102,187,106,.08)":"rgba(239,83,80,.08)",color:on?"#66bb6a":"#ef5350"}}>{on?`在线 ${srv.players}`:"离线"}</span>
+                  <span style={{fontSize:10,padding:"2px 8px",borderRadius:8,background:on?"rgba(102,187,106,.08)":"rgba(239,83,80,.08)",color:on?"#66bb6a":"#ef5350"}}>{on?replaceVars(t("onlinePlayers"), { value: srv.players }):t("offlineShort")}</span>
                 </div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <div style={{display:"flex",gap:12,fontSize:11,color:"#546e7a",flexWrap:"wrap"}}><span>🌐 {srv.country}</span><span>📋 {srv.sessionCount}次</span><span>🕐 {timeAgo(srv.lastSeen)}</span></div>
-                  <div style={{fontSize:17,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(srv.totalHours)}</div>
+                  <div style={{display:"flex",gap:12,fontSize:11,color:"#546e7a",flexWrap:"wrap"}}><span>🌐 {srv.country}</span><span>📋 {fmtFull(srv.sessionCount, locale)} {t("timesShort")}</span><span>🕐 {timeAgo(srv.lastSeen, lang)}</span></div>
+                  <div style={{fontSize:17,fontWeight:800,color:"#42a5f5",fontFamily:"'JetBrains Mono',monospace"}}>{fmtServerDuration(srv.totalHours, lang, locale)}</div>
                 </div>
               </div>
             </div>
@@ -553,14 +873,10 @@ function ServerPanel({data, candidatesPayload, selectedBmId, onSelectBm, onLoadS
 //  Main App
 // ═══════════════════════════
 export default function App() {
+  const [lang,setLang]=useState(detectInitialLang);
   const [tab,setTab]=useState("kda");
   const [steamId,setSteamId]=useState("");
   const [loading,setLoading]=useState(false);
-  const [authChecked,setAuthChecked]=useState(false);
-  const [authenticated,setAuthenticated]=useState(false);
-  const [authPassword,setAuthPassword]=useState("");
-  const [authError,setAuthError]=useState("");
-  const [authLoading,setAuthLoading]=useState(false);
   const [player,setPlayer]=useState(null);
   const [kda,setKda]=useState(null);
   const [inv,setInv]=useState(null);
@@ -570,6 +886,15 @@ export default function App() {
   const [serverLoading,setServerLoading]=useState(false);
   const [serverError,setServerError]=useState("");
   const [demo,setDemo]=useState(false);
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
+  const t = useCallback((key) => UI[lang]?.[key] || UI.zh[key] || key, [lang]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("rust-kda-language", lang);
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+    }
+  }, [lang]);
 
   const apiJson = useCallback(async (path, options = {}) => {
     const headers = {...(options.headers||{})};
@@ -578,85 +903,15 @@ export default function App() {
       headers["Content-Type"] = "application/json";
     }
     const response = await fetch(`${API_BASE}${path}`, {
-      credentials: "include",
       ...options,
       headers,
     });
     const payload = await response.json().catch(()=>({}));
-    if(response.status === 401){
-      startTransition(()=>{
-        setAuthenticated(false);
-        setAuthChecked(true);
-        setAuthError(payload?.error || "");
-      });
-      throw new Error("__UNAUTHORIZED__");
-    }
     if(!response.ok || payload?.error){
-      throw new Error(payload?.error || "请求失败");
+      throw new Error(payload?.error || t("requestFailed"));
     }
     return payload;
-  }, []);
-
-  useEffect(()=>{
-    let mounted = true;
-    fetch(`${API_BASE}/auth/status`, {credentials:"include"})
-      .then((response)=>response.json().catch(()=>({authenticated:false})))
-      .then((payload)=>{
-        if(!mounted) return;
-        startTransition(()=>{
-          setAuthenticated(Boolean(payload?.authenticated));
-          setAuthChecked(true);
-        });
-      })
-      .catch(()=>{
-        if(!mounted) return;
-        startTransition(()=>{
-          setAuthenticated(false);
-          setAuthChecked(true);
-        });
-      });
-    return ()=>{ mounted = false; };
-  }, []);
-
-  const login = useCallback(async ()=>{
-    if(!authPassword.trim()) return;
-    startTransition(()=>{
-      setAuthLoading(true);
-      setAuthError("");
-    });
-    try{
-      await apiJson("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({password: authPassword}),
-      });
-      startTransition(()=>{
-        setAuthenticated(true);
-        setAuthPassword("");
-      });
-    }catch(err){
-      if(err.message !== "__UNAUTHORIZED__"){
-        startTransition(()=>setAuthError(err.message || "登录失败"));
-      }
-    }
-    startTransition(()=>setAuthLoading(false));
-  }, [apiJson, authPassword]);
-
-  const logout = useCallback(async ()=>{
-    try{
-      await fetch(`${API_BASE}/auth/logout`, {method:"POST", credentials:"include"});
-    } finally {
-      startTransition(()=>{
-        setAuthenticated(false);
-        setPlayer(null);
-        setKda(null);
-        setInv(null);
-        setSrv(null);
-        setServerCandidates(null);
-        setSelectedBmId("");
-        setServerError("");
-      });
-    }
-  }, []);
+  }, [t]);
 
   const loadServersForSelection = useCallback(async (inputId, bmId)=>{
     if(!inputId || !bmId) return;
@@ -670,15 +925,13 @@ export default function App() {
       const payload = await apiJson(`/servers/${encodeURIComponent(inputId)}?bmId=${encodeURIComponent(bmId)}`);
       startTransition(()=>setSrv(payload));
     }catch(err){
-      if(err.message !== "__UNAUTHORIZED__"){
-        startTransition(()=>setServerError(err?.message || "服务器时长加载失败"));
-      }
+      startTransition(()=>setServerError(err?.message || t("serverLoadFailed")));
     }
     startTransition(()=>setServerLoading(false));
-  },[apiJson]);
+  },[apiJson, t]);
 
   const query=useCallback(async()=>{
-    if(!steamId.trim() || !authenticated) return;
+    if(!steamId.trim()) return;
     startTransition(()=>{
       setLoading(true);setPlayer(null);setKda(null);setInv(null);setSrv(null);setServerCandidates(null);setSelectedBmId("");setServerLoading(false);setServerError("");setDemo(false);
     });
@@ -698,67 +951,31 @@ export default function App() {
           if(c.value?.candidates?.length){
             setSelectedBmId(c.value.candidates[0].bmId);
           }else{
-            setServerError("没有找到可确认的 BattleMetrics 用户");
+            setServerError(t("noBmFound"));
           }
         }else{
-          setServerError("BattleMetrics 候选搜索失败");
+          setServerError(t("bmSearchFailed"));
         }
       });
     } catch (err) {
-      if(err.message !== "__UNAUTHORIZED__"){
-        startTransition(()=>{
-          setDemo(true);
-          setPlayer({steamId,name:"Demo_Player",status:"演示模式",country:"CN",created:1609459200,lastLogoff:1712102400,playtimeHours:2890.4,playtimeTwoWeeksHours:36.5,achievementsCount:67});
-          setKda(DEMO.kda); setInv(DEMO.inventory); setSrv(DEMO.servers); setServerCandidates({steamId,playerName:"Demo_Player",candidates:[{bmId:"demo-1",name:"Demo_Player",score:100,sessionPreview:{count:4,hasMore:false},lastSeen:new Date().toISOString()}]}); setSelectedBmId("demo-1");
-        });
-      }
+      startTransition(()=>{
+        setDemo(true);
+        setPlayer({steamId,name:"Demo_Player",status:"演示模式",country:"CN",created:1609459200,lastLogoff:1712102400,playtimeHours:2890.4,playtimeTwoWeeksHours:36.5,achievementsCount:67});
+        setKda(DEMO.kda); setInv(DEMO.inventory); setSrv(DEMO.servers); setServerCandidates({steamId,playerName:"Demo_Player",candidates:[{bmId:"demo-1",name:"Demo_Player",score:100,sessionPreview:{count:4,hasMore:false},lastSeen:new Date().toISOString()}]}); setSelectedBmId("demo-1");
+      });
     }
     startTransition(()=>setLoading(false));
-  },[authenticated, apiJson, steamId]);
+  },[apiJson, steamId, t]);
 
   const tabs=[
-    {id:"kda",label:"KDA 数据",icon:"⚔️",color:"#ef5350"},
-    {id:"inventory",label:"库存",icon:"💰",color:"#ffc107"},
-    {id:"servers",label:"服务器时长",icon:"🖥️",color:"#42a5f5"},
+    {id:"kda",label:t("kdaTab"),icon:"⚔️",color:"#ef5350"},
+    {id:"inventory",label:t("inventoryTab"),icon:"💰",color:"#ffc107"},
+    {id:"servers",label:t("serversTab"),icon:"🖥️",color:"#42a5f5"},
   ];
-
-  if(!authChecked){
-    return (
-      <div style={{minHeight:"100vh",display:"grid",placeItems:"center",background:"#08080d",color:"#e0e0e0",fontFamily:"'Noto Sans SC',-apple-system,sans-serif"}}>
-        <div style={{fontSize:14,color:"#78909c"}}>正在检查访问权限...</div>
-      </div>
-    );
-  }
-
-  if(!authenticated){
-    return (
-      <div style={{minHeight:"100vh",display:"grid",placeItems:"center",background:"#08080d",color:"#e0e0e0",fontFamily:"'Noto Sans SC',-apple-system,sans-serif",padding:"24px"}}>
-        <div style={{width:"min(100%,420px)",background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:20,padding:"28px"}}>
-          <div style={{fontSize:22,fontWeight:800,marginBottom:8}}>访问验证</div>
-          <div style={{fontSize:12,color:"#78909c",lineHeight:1.6,marginBottom:18}}>请输入入口密码后再使用查询功能。</div>
-          <input
-            type="password"
-            value={authPassword}
-            onChange={(e)=>setAuthPassword(e.target.value)}
-            onKeyDown={(e)=>e.key==="Enter"&&login()}
-            placeholder="请输入入口密码"
-            style={{width:"100%",padding:"12px 14px",borderRadius:12,background:"rgba(255,255,255,.035)",border:"1px solid rgba(255,255,255,.08)",color:"#e0e0e0",fontSize:14,outline:"none"}}
-          />
-          {authError&&<div style={{marginTop:12,fontSize:12,color:"#ef9a9a"}}>{authError}</div>}
-          <button
-            onClick={login}
-            disabled={authLoading}
-            style={{marginTop:16,width:"100%",padding:"12px 16px",borderRadius:12,border:"none",background:authLoading?"rgba(205,65,43,.25)":"linear-gradient(135deg,#cd412b,#e65100)",color:"#fff",fontSize:14,fontWeight:700,cursor:authLoading?"wait":"pointer"}}
-          >
-            {authLoading?"正在验证...":"进入网站"}
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const isActiveStatus = ["在线", "游戏中", "Online", "In Game"].includes(player?.status);
 
   return (
-    <div style={{minHeight:"100vh",background:"#08080d",fontFamily:"'Noto Sans SC',-apple-system,sans-serif",color:"#e0e0e0"}}>
+    <div style={{minHeight:"100vh",background:"#08080d",fontFamily:"'Noto Sans SC','Inter',-apple-system,sans-serif",color:"#e0e0e0"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
         @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
@@ -775,6 +992,9 @@ export default function App() {
         .tab-shell{display:flex;gap:6px;flex-wrap:wrap;padding:0 clamp(12px,2.4vw,28px) 10px}
         .content-shell{padding-top:18px}
         .player-shell{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;padding:14px 18px;background:rgba(255,255,255,.02);border-radius:14px;border:1px solid rgba(255,255,255,.04)}
+        .lang-switch{display:flex;align-items:center;gap:6px;padding:5px;border-radius:999px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}
+        .lang-switch button{padding:6px 12px;border:none;border-radius:999px;background:transparent;color:#78909c;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
+        .lang-switch button.active{background:rgba(255,255,255,.1);color:#eceff1}
         @media (max-width: 900px){
           .header-shell{padding-top:16px}
           .tab-shell{padding-bottom:8px}
@@ -786,21 +1006,24 @@ export default function App() {
 
       {/* Header */}
       <div style={{background:"linear-gradient(180deg,rgba(205,65,43,.06) 0%,transparent 100%)",borderBottom:"1px solid rgba(255,255,255,.03)"}} className="header-shell">
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
           <div style={{width:42,height:42,borderRadius:12,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:900,color:"#fff",boxShadow:"0 4px 18px rgba(205,65,43,.35)",fontFamily:"'JetBrains Mono',monospace"}}>R</div>
-          <div style={{flex:1}}><div style={{fontSize:18,fontWeight:800,letterSpacing:-.5}}>Rust 玩家查询工具</div><div style={{fontSize:10,color:"#455a64",letterSpacing:1}}>KDA · INVENTORY · PLAYTIME</div></div>
-          <button onClick={logout} style={{padding:"8px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#b0bec5",fontSize:12,cursor:"pointer"}}>退出</button>
+          <div style={{flex:1}}><div style={{fontSize:18,fontWeight:800,letterSpacing:-.5}}>{t("appTitle")}</div><div style={{fontSize:10,color:"#455a64",letterSpacing:1}}>{t("appSubtitle")}</div></div>
+          <div className="lang-switch" aria-label={t("language")}>
+            <button className={lang==="zh"?"active":""} onClick={()=>setLang("zh")}>{t("chinese")}</button>
+            <button className={lang==="en"?"active":""} onClick={()=>setLang("en")}>{t("english")}</button>
+          </div>
         </div>
         <div className="search-shell">
           <input value={steamId} onChange={e=>setSteamId(e.target.value)} onKeyDown={e=>e.key==="Enter"&&query()}
-            placeholder="Steam ID64 / 自定义 URL / Vanity 名称..."
+            placeholder={t("queryPlaceholder")}
             style={{flex:1,padding:"11px 14px",borderRadius:10,background:"rgba(255,255,255,.035)",border:"1px solid rgba(255,255,255,.06)",color:"#e0e0e0",fontSize:13,outline:"none",fontFamily:"'JetBrains Mono',monospace"}}
           />
           <button onClick={query} disabled={loading} style={{padding:"10px 22px",borderRadius:10,border:"none",background:loading?"rgba(205,65,43,.25)":"linear-gradient(135deg,#cd412b,#e65100)",color:"#fff",fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",boxShadow:loading?"none":"0 4px 15px rgba(205,65,43,.3)",whiteSpace:"nowrap"}}>
-            {loading?"⏳":"🔍"} 查询
+            {loading?"⏳":"🔍"} {t("queryButton")}
           </button>
         </div>
-        {demo&&<div style={{marginTop:10,padding:"6px 12px",borderRadius:8,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.15)",fontSize:11,color:"#ffa726",textAlign:"center"}}>⚡ 演示模式 — 后端未连接。运行 python rust_query_server_v2.py 启用真实查询</div>}
+        {demo&&<div style={{marginTop:10,padding:"6px 12px",borderRadius:8,background:"rgba(255,167,38,.08)",border:"1px solid rgba(255,167,38,.15)",fontSize:11,color:"#ffa726",textAlign:"center"}}>{t("demoNotice")}</div>}
       </div>
 
       {/* Tabs */}
@@ -818,23 +1041,23 @@ export default function App() {
         {loading?(
           <div style={{textAlign:"center",padding:"60px 20px"}}>
             <div style={{display:"inline-block",animation:"spin 1s linear infinite"}}><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="rgba(205,65,43,.3)" strokeWidth="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="#cd412b" strokeWidth="3" strokeDasharray="40 36" strokeLinecap="round"/></svg></div>
-            <div style={{fontSize:13,color:"#546e7a",marginTop:12,animation:"pulse 1.5s infinite"}}>正在查询数据...</div>
+            <div style={{fontSize:13,color:"#546e7a",marginTop:12,animation:"pulse 1.5s infinite"}}>{t("querying")}</div>
           </div>
         ):!player?(
           <div style={{textAlign:"center",padding:"60px 20px",color:"#263238"}}>
             <div style={{fontSize:52,marginBottom:14,opacity:.2}}>🎮</div>
-            <div style={{fontSize:14,color:"#37474f"}}>输入 Steam ID 开始查询</div>
-            <div style={{fontSize:11,color:"#1a1a1a",marginTop:6}}>支持 SteamID64 / 自定义 URL / Vanity 名称</div>
+            <div style={{fontSize:14,color:"#37474f"}}>{t("emptyTitle")}</div>
+            <div style={{fontSize:11,color:"#1a1a1a",marginTop:6}}>{t("emptyHint")}</div>
           </div>
         ):(
           <>
             <div className="player-shell">
               {player.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:48,height:48,borderRadius:12,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#cd412b,#e65100)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff"}}>{player.name?.[0]?.toUpperCase()||"?"}</div>}
               <div style={{flex:1,minWidth:220}}><div style={{fontSize:16,fontWeight:700,overflowWrap:"anywhere"}}>{player.name}</div><div style={{fontSize:11,color:"#455a64",fontFamily:"'JetBrains Mono',monospace",overflowWrap:"anywhere"}}>{player.steamId||steamId}</div></div>
-              <div style={{padding:"4px 10px",borderRadius:8,background:player.status==="在线"||player.status==="游戏中"?"rgba(102,187,106,.08)":"rgba(120,144,156,.08)",fontSize:11,fontWeight:600,color:player.status==="在线"||player.status==="游戏中"?"#66bb6a":"#78909c"}}>{player.status}</div>
+              <div style={{padding:"4px 10px",borderRadius:8,background:isActiveStatus?"rgba(102,187,106,.08)":"rgba(120,144,156,.08)",fontSize:11,fontWeight:600,color:isActiveStatus?"#66bb6a":"#78909c"}}>{translateStatus(lang, player.status)}</div>
             </div>
-            {tab==="kda"&&kda&&<KDAPanel data={kda} player={player} inventory={inv} servers={srv}/>}
-            {tab==="inventory"&&inv&&<InventoryPanel data={inv}/>}
+            {tab==="kda"&&kda&&<KDAPanel data={kda} player={player} inventory={inv} servers={srv} lang={lang} locale={locale} t={t}/>}
+            {tab==="inventory"&&inv&&<InventoryPanel data={inv} lang={lang} locale={locale} t={t}/>}
             {tab==="servers"&&(
               <ServerPanel
                 data={srv}
@@ -848,6 +1071,9 @@ export default function App() {
                 }}
                 loading={serverLoading}
                 error={serverError || srv?.error}
+                lang={lang}
+                locale={locale}
+                t={t}
               />
             )}
           </>

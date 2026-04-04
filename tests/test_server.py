@@ -8,8 +8,7 @@ import rust_query_server_v2 as srv
 
 
 def authenticate_client(client):
-    with client.session_transaction() as session:
-        session["authenticated"] = True
+    return client
 
 
 def test_resolve_steam_id_accepts_steamid64():
@@ -610,35 +609,34 @@ def test_api_servers_uses_explicit_bmid_when_provided(monkeypatch):
     }
 
 
-def test_api_rejects_unauthenticated_requests():
+def test_api_no_longer_rejects_requests_without_auth():
     client = srv.app.test_client()
+    srv._rate_limit_bucket.clear()
+    original_limit = srv.API_RATE_LIMIT_PER_MINUTE
+    srv.API_RATE_LIMIT_PER_MINUTE = 60
 
-    resp = client.get("/api/player/demo")
+    try:
+        resp = client.get("/api/player/demo")
+    finally:
+        srv.API_RATE_LIMIT_PER_MINUTE = original_limit
 
-    assert resp.status_code == 401
-    assert resp.get_json() == {"error": "未授权，请先输入入口密码"}
+    assert resp.status_code != 401
 
 
-def test_api_auth_login_success_sets_session(monkeypatch):
+def test_api_auth_login_is_now_a_noop():
     client = srv.app.test_client()
-    monkeypatch.setattr(srv, "APP_ACCESS_PASSWORD", "安静")
-
-    resp = client.post("/api/auth/login", json={"password": "安静"})
+    resp = client.post("/api/auth/login", json={"password": "anything"})
 
     assert resp.status_code == 200
     assert resp.get_json() == {"ok": True, "authenticated": True}
-    with client.session_transaction() as session:
-        assert session["authenticated"] is True
 
 
-def test_api_auth_login_failure_returns_401(monkeypatch):
+def test_api_auth_logout_is_now_a_noop():
     client = srv.app.test_client()
-    monkeypatch.setattr(srv, "APP_ACCESS_PASSWORD", "安静")
+    resp = client.post("/api/auth/logout")
 
-    resp = client.post("/api/auth/login", json={"password": "错误"})
-
-    assert resp.status_code == 401
-    assert resp.get_json() == {"error": "入口密码错误"}
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "authenticated": True}
 
 
 def test_api_rate_limit_returns_429(monkeypatch):

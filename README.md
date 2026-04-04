@@ -12,7 +12,6 @@ Rust KDA 是一个围绕 **Rust 玩家公开数据查询** 构建的前后端项
 当前项目定位是：
 
 - `Web 单站点部署`
-- `带入口密码`
 - `后端代理第三方接口`
 - `适合个人部署到自己的域名`
 
@@ -25,7 +24,6 @@ Rust KDA 是一个围绕 **Rust 玩家公开数据查询** 构建的前后端项
 - 公开库存聚合与估值
 - 官方商城目录交叉命中
 - BattleMetrics 候选选择后加载服务器时长
-- 入口密码 + Session 鉴权
 - 基础限流
 
 ### 当前限制
@@ -111,8 +109,6 @@ cp .env.example .env
 ```bash
 STEAM_API_KEY="your-steam-key"
 BATTLEMETRICS_TOKEN="your-battlemetrics-token"
-APP_ACCESS_PASSWORD="change-me-access-password"
-APP_SESSION_SECRET="change-me-to-a-long-random-secret"
 ALLOWED_ORIGINS="https://your-domain.example"
 ```
 
@@ -147,10 +143,8 @@ npm run dev
 
 生产环境建议：
 
-- `SESSION_COOKIE_SECURE=true`
 - `FLASK_DEBUG=false`
 - `ALLOWED_ORIGINS` 只填正式域名
-- 入口密码不要使用公开 README 里的示例值
 - Steam / BattleMetrics token 只保存在服务器 `.env`
 
 ## 六、开发与验证
@@ -174,8 +168,6 @@ npm run build
 - `.env`
 - Steam API Key
 - BattleMetrics Token
-- 入口密码
-- Session Secret
 - 服务器部署日志
 - 调试抓取输出
 

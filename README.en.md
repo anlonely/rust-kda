@@ -100,8 +100,6 @@ Then fill in your own values:
 ```bash
 STEAM_API_KEY="your-steam-key"
 BATTLEMETRICS_TOKEN="your-battlemetrics-token"
-APP_ACCESS_PASSWORD="change-me-access-password"
-APP_SESSION_SECRET="change-me-to-a-long-random-secret"
 ALLOWED_ORIGINS="https://your-domain.example"
 ```
 
@@ -136,10 +134,8 @@ Recommended deployment shape:
 
 Recommended production settings:
 
-- `SESSION_COOKIE_SECURE=true`
 - `FLASK_DEBUG=false`
 - `ALLOWED_ORIGINS` should only include your real domain
-- never use public example passwords in production
 - keep Steam and BattleMetrics tokens only in server-side `.env`
 
 ## 6. Validation

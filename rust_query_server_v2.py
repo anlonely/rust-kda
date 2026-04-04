@@ -11,7 +11,7 @@ import re
 import os
 from html import unescape
 from pathlib import Path
-from flask import Flask, jsonify, request, session
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 from datetime import datetime
@@ -40,15 +40,10 @@ load_dotenv()
 # ╚══════════════════════════════════════════════════════════╝
 DEFAULT_STEAM_API_KEY = "YOUR_STEAM_API_KEY"
 DEFAULT_BATTLEMETRICS_TOKEN = "YOUR_BM_TOKEN"
-DEFAULT_APP_PASSWORD = "CHANGE_ME_ACCESS_PASSWORD"
-DEFAULT_APP_SESSION_SECRET = "CHANGE_ME_IN_PRODUCTION"
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", DEFAULT_STEAM_API_KEY)
 BATTLEMETRICS_TOKEN = os.getenv("BATTLEMETRICS_TOKEN", DEFAULT_BATTLEMETRICS_TOKEN)
-APP_ACCESS_PASSWORD = os.getenv("APP_ACCESS_PASSWORD", DEFAULT_APP_PASSWORD)
-APP_SESSION_SECRET = os.getenv("APP_SESSION_SECRET", DEFAULT_APP_SESSION_SECRET)
 API_RATE_LIMIT_PER_MINUTE = int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))
-LOGIN_RATE_LIMIT_PER_MINUTE = int(os.getenv("LOGIN_RATE_LIMIT_PER_MINUTE", "10"))
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS).split(",")
@@ -65,13 +60,7 @@ _bm_resolution_cache = {}
 _rate_limit_bucket = {}
 
 app = Flask(__name__)
-app.secret_key = APP_SESSION_SECRET
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"},
-)
-CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}})
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}})
 
 
 class ConfigurationError(RuntimeError):
@@ -86,19 +75,11 @@ def battlemetrics_token_set():
     return BATTLEMETRICS_TOKEN != DEFAULT_BATTLEMETRICS_TOKEN
 
 
-def session_secret_set():
-    return APP_SESSION_SECRET != DEFAULT_APP_SESSION_SECRET
-
-
 def get_client_ip():
     forwarded_for = request.headers.get("X-Forwarded-For", "")
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()
     return request.remote_addr or "unknown"
-
-
-def is_authenticated():
-    return bool(session.get("authenticated"))
 
 
 def check_rate_limit(bucket_name, limit, window_seconds=60):
@@ -122,21 +103,6 @@ def protect_api_routes():
 
     if request.path == "/api/health":
         return None
-
-    if request.path == "/api/auth/status":
-        return None
-
-    if request.path == "/api/auth/login":
-        allowed, retry_after = check_rate_limit("login", LOGIN_RATE_LIMIT_PER_MINUTE)
-        if not allowed:
-            response = jsonify({"error": "登录尝试过于频繁，请稍后再试"})
-            response.status_code = 429
-            response.headers["Retry-After"] = str(retry_after)
-            return response
-        return None
-
-    if not is_authenticated():
-        return jsonify({"error": "未授权，请先输入入口密码"}), 401
 
     allowed, retry_after = check_rate_limit("api", API_RATE_LIMIT_PER_MINUTE)
     if not allowed:
@@ -1238,7 +1204,6 @@ def get_player_kda(steam_id):
             ("wood", "木头", resources["wood"], "🪵"),
             ("stone", "石头", resources["stone"], "🧱"),
             ("metalOre", "金属矿石", resources["metalOre"], "🪨"),
-            ("sulfurOre", "硫磺矿石", resources["sulfurOre"], "💛"),
             ("scrap", "废料", resources["scrap"], "🧲"),
             ("cloth", "布", resources["cloth"], "🧶"),
             ("leather", "皮革", resources["leather"], "🧥"),
@@ -1817,24 +1782,17 @@ def get_player_servers(bm_player_id):
 
 @app.route("/api/auth/status")
 def api_auth_status():
-    return jsonify({"authenticated": is_authenticated()})
+    return jsonify({"authenticated": True})
 
 
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
-    payload = request.get_json(silent=True) or {}
-    password = str(payload.get("password", ""))
-    if password != APP_ACCESS_PASSWORD:
-        return jsonify({"error": "入口密码错误"}), 401
-    session["authenticated"] = True
-    session["authenticatedAt"] = int(time.time())
     return jsonify({"ok": True, "authenticated": True})
 
 
 @app.route("/api/auth/logout", methods=["POST"])
 def api_auth_logout():
-    session.clear()
-    return jsonify({"ok": True, "authenticated": False})
+    return jsonify({"ok": True, "authenticated": True})
 
 @app.route("/api/player/<path:input_id>")
 def api_player(input_id):
@@ -1969,13 +1927,11 @@ if __name__ == "__main__":
     print("=" * 58)
     print(f"  Steam API Key:       {'✅' if steam_api_key_set() else '❌ 未配置'}")
     print(f"  BattleMetrics Token: {'✅' if battlemetrics_token_set() else '❌ 未配置'}")
-    print(f"  Session Secret:      {'✅' if session_secret_set() else '❌ 使用默认值'}")
     print(f"  已知 DLC 数量:        {len(RUST_DLCS)}")
     print(f"  监听端口:             {port}")
     print(f"  调试模式:             {'✅' if debug_mode else '❌ 关闭'}")
     print()
     print("  端点:")
-    print("  POST /api/auth/login       入口登录")
     print("  GET /api/player/<id>       玩家信息")
     print("  GET /api/kda/<id>          KDA 数据")
     print("  GET /api/inventory/<id>    库存 + DLC")
