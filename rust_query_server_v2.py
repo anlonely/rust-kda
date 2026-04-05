@@ -19,7 +19,8 @@ from datetime import datetime
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 except Exception:
-    PlaywrightTimeoutError = RuntimeError
+    class PlaywrightTimeoutError(RuntimeError):
+        pass
     sync_playwright = None
 
 
