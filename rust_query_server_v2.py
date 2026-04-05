@@ -99,6 +99,42 @@ ATLAS_CACHE_TTL = 180
 ATLAS_META_TTL = 1800
 ATLAS_INTERACTION_DELAY_MS = 1200
 
+MOOSE_SERVER_NAMES = [
+    "Global",
+    "US Monthly (Premium)",
+    "EU Monthly",
+    "US Main (Premium)",
+    "EU Main",
+    "US Mondays",
+    "EU Mondays",
+    "US Biweekly (Premium)",
+    "EU Biweekly",
+    "US Low",
+    "EU Low",
+    "US Small",
+    "EU Small",
+    "US Medium",
+    "EU Medium",
+    "US Mini",
+    "EU Mini",
+    "EU Hapis",
+]
+MOOSE_CATEGORY_NAMES = [
+    "PvP",
+    "PvE",
+    "Gambling",
+    "Resources",
+    "Building",
+    "Farming",
+    "Looting",
+    "Recycling",
+    "Boom",
+    "Vehicles",
+    "Vehicle Combat",
+    "Fishing",
+]
+MOOSE_DEFAULT_PERIODS = [{"id": "all-time", "name": "All Time", "active": True}]
+
 # ── 简易内存缓存 ──
 _cache = {}
 _bm_resolution_cache = {}
@@ -2308,22 +2344,19 @@ def dedupe_named_items(items):
 
 def fetch_moose_catalog():
     def builder():
-        with moose_page_session() as page:
-            servers = [{"id": "global", "name": "Global", "active": True}]
-            servers.extend(
-                build_moose_named_item(name)
-                for name in moose_get_dropdown_options(page, 0)
-            )
-            categories = [
-                build_moose_named_item(name)
-                for name in page.get_by_role("tab").all_inner_texts()
-                if collapse_whitespace(name)
-            ]
-            return {
-                "source": MOOSE_STATS_URL,
-                "servers": dedupe_named_items(servers),
-                "categories": dedupe_named_items(categories),
-            }
+        servers = [
+            build_moose_named_item(name, active=(index == 0))
+            for index, name in enumerate(MOOSE_SERVER_NAMES)
+        ]
+        categories = [
+            build_moose_named_item(name, active=(index == 0))
+            for index, name in enumerate(MOOSE_CATEGORY_NAMES)
+        ]
+        return {
+            "source": MOOSE_STATS_URL,
+            "servers": dedupe_named_items(servers),
+            "categories": dedupe_named_items(categories),
+        }
 
     return cached_compute("moose:catalog", MOOSE_META_TTL, builder)
 
@@ -2348,21 +2381,14 @@ def moose_collect_periods(page):
 def fetch_moose_server_detail(server_id):
     catalog = fetch_moose_catalog()
     server = resolve_named_item(server_id, catalog["servers"], "服务器")
-
-    def builder():
-        with moose_page_session() as page:
-            if server["name"] != "Global":
-                moose_select_dropdown_value(page, 0, server["name"])
-            return {
-                "server": {
-                    **server,
-                    "active": True,
-                },
-                "periods": moose_collect_periods(page),
-                "categories": catalog["categories"],
-            }
-
-    return cached_compute(f"moose:server-detail:{server['id']}", MOOSE_CACHE_TTL, builder)
+    return {
+        "server": {
+            **server,
+            "active": True,
+        },
+        "periods": [dict(item) for item in MOOSE_DEFAULT_PERIODS],
+        "categories": catalog["categories"],
+    }
 
 
 def moose_select_server(page, server):
