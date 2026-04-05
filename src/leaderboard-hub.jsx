@@ -32,7 +32,7 @@ const COPY = {
     orderBy: "榜单方向",
     listFilter: "榜单过滤",
     playerLookup: "玩家汇总",
-    lookupPlaceholder: "输入玩家名称",
+    lookupPlaceholder: "输入 17 位 Steam64",
     filterPlaceholder: "当前榜单内搜索玩家名",
     allCurrent: "当前/默认",
     desc: "降序",
@@ -45,7 +45,7 @@ const COPY = {
     loadingBoard: "正在拉取榜单数据...",
     loadingPlayer: "正在汇总玩家跨类型数据...",
     emptyRows: "当前条件下没有榜单数据。",
-    emptyPlayer: "输入玩家名后可跨全部类型聚合结果。",
+    emptyPlayer: "输入 Steam64 后可跨全部类型聚合结果。",
     boardTitle: "榜单明细",
     boardCopy: "左侧按站点上下文选择服务器和类型，右侧查看当前榜单与跨类型玩家结果。",
     playerTitle: "玩家跨类型汇总",
@@ -132,7 +132,7 @@ const COPY = {
     orderBy: "Order",
     listFilter: "Leaderboard Filter",
     playerLookup: "Player Summary",
-    lookupPlaceholder: "Enter player name",
+    lookupPlaceholder: "Enter a 17-digit Steam64 ID",
     filterPlaceholder: "Filter current leaderboard by player",
     allCurrent: "Current / Default",
     desc: "Desc",
@@ -145,7 +145,7 @@ const COPY = {
     loadingBoard: "Loading leaderboard...",
     loadingPlayer: "Aggregating player data across tags...",
     emptyRows: "No leaderboard rows for the current filters.",
-    emptyPlayer: "Enter a player name to aggregate results across every available tag.",
+    emptyPlayer: "Enter a Steam64 ID to aggregate results across every available tag.",
     boardTitle: "Leaderboard",
     boardCopy: "Pick server and tag on the left, then inspect the current leaderboard and cross-tag player summary on the right.",
     playerTitle: "Cross-Tag Player Summary",
@@ -1124,9 +1124,9 @@ export default function LeaderboardHub({
   const playerSearchControllerRef = useRef(null);
 
   useEffect(() => {
-    if (!preferredPlayerName || playerInput) return;
-    setPlayerInput(preferredPlayerName);
-  }, [preferredPlayerName]);
+    if (!preferredSteamId || playerInput) return;
+    setPlayerInput(preferredSteamId);
+  }, [preferredSteamId, playerInput]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -1343,8 +1343,8 @@ export default function LeaderboardHub({
   async function runPlayerSearch(event) {
     event?.preventDefault();
     if (site === "atlas") return;
-    const username = playerInput.trim();
-    if (!serverId || !username) return;
+    const steamId = playerInput.trim();
+    if (!serverId || !steamId) return;
     playerSearchControllerRef.current?.abort();
     const controller = new AbortController();
     playerSearchControllerRef.current = controller;
@@ -1361,10 +1361,10 @@ export default function LeaderboardHub({
             : "/rusticated/player-search";
       const params =
         site === "rustoria"
-          ? { serverId, username, wipe: wipeId }
+          ? { serverId, steamId, wipe: wipeId }
           : site === "moose" || site === "survivors"
-            ? { serverId, username, period }
-            : { serverId, username, wipeId };
+            ? { serverId, steamId, period }
+            : { serverId, steamId, wipeId };
       const payload = await fetchJson(path, params, { signal: controller.signal });
       setPlayerSummary(payload);
     } catch (fetchError) {
@@ -1431,20 +1431,20 @@ export default function LeaderboardHub({
               {t.intro}
             </div>
             <div className="lb-copy" style={{ marginTop: 8 }}>
-              {preferredPlayerName ? (
+              {preferredSteamId ? (
                 <>
                   {t.independent}
                   {" "}
                   <button
                     className="lb-button"
-                    onClick={() => setPlayerInput(preferredPlayerName)}
+                    onClick={() => setPlayerInput(preferredSteamId)}
                     style={{ marginLeft: 8 }}
                   >
-                    {t.useCurrentPlayer}: {preferredPlayerName}
+                    {t.useCurrentSteamId}: {preferredSteamId}
                   </button>
                 </>
               ) : (
-                `${t.independent} ${t.noCurrentPlayer}`
+                `${t.independent} ${t.noCurrentSteamId}`
               )}
             </div>
           </div>
@@ -1590,6 +1590,7 @@ export default function LeaderboardHub({
               <span className="lb-summary-chip">{t.currentSite}: {meta.name}</span>
               <span className="lb-summary-chip">{t.currentServer}: {activeServerName}</span>
               <span className="lb-summary-chip">{t.currentType}: {currentItem?.name || "—"}</span>
+              <span className="lb-summary-chip">{t.currentSteamId}: {playerInput.trim() || "—"}</span>
               <span className="lb-summary-chip">{t.fields}: {fields.length}</span>
               <span className="lb-summary-chip">Total: {getBoardTotal(site, leaderboard).toLocaleString(locale)}</span>
             </div>

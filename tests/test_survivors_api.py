@@ -163,3 +163,15 @@ def test_api_survivors_player_search_returns_category_matches(monkeypatch):
     assert payload["identity"]["steamId"] == "76561199858388683"
     assert payload["matchedCategories"] == 2
     assert payload["categories"][1]["selectedMatch"]["values"]["kills"] == 15
+
+
+def test_api_survivors_player_search_accepts_steam_id(monkeypatch):
+    client = srv.app.test_client()
+    monkeypatch.setattr(srv, "fetch_survivors_player_summary", fake_fetch_survivors_player_summary)
+    monkeypatch.setattr(srv, "get_player_summary", lambda steam_id: {"steamId": steam_id, "name": "322"})
+
+    response = client.get("/api/survivors/player-search?serverId=srv-7&steamId=76561199858388683")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["identity"]["steamId"] == "76561199858388683"

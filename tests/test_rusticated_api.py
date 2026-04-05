@@ -225,3 +225,15 @@ def test_api_rusticated_player_search_returns_group_matches(monkeypatch):
     assert payload["identity"]["username"] == "Ignignokt"
     assert payload["matchedGroups"] == 2
     assert payload["groups"][0]["selectedMatch"]["stats"]["kill_player"] == 144
+
+
+def test_api_rusticated_player_search_accepts_steam_id(monkeypatch):
+    client = srv.app.test_client()
+    monkeypatch.setattr(srv, "cached_get", fake_rusticated_cached_get)
+    monkeypatch.setattr(srv, "get_player_summary", lambda steam_id: {"steamId": steam_id, "name": "Ignignokt"})
+
+    response = client.get("/api/rusticated/player-search?serverId=main&steamId=76561198000000001")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["identity"]["steamId"] == "76561198000000001"

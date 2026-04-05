@@ -164,3 +164,15 @@ def test_api_moose_player_search_returns_category_matches(monkeypatch):
     assert payload["identity"]["steamId"] == "76561198006834730"
     assert payload["matchedCategories"] == 1
     assert payload["categories"][0]["selectedMatch"]["values"]["kills"] == "51,430"
+
+
+def test_api_moose_player_search_accepts_steam_id(monkeypatch):
+    client = srv.app.test_client()
+    monkeypatch.setattr(srv, "fetch_moose_player_summary", fake_fetch_moose_player_summary)
+    monkeypatch.setattr(srv, "get_player_summary", lambda steam_id: {"steamId": steam_id, "name": "Ignignokt"})
+
+    response = client.get("/api/moose/player-search?serverId=global&steamId=76561198006834730")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["identity"]["steamId"] == "76561198006834730"

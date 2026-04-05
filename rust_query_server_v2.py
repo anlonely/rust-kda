@@ -2069,6 +2069,57 @@ def collapse_whitespace(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def is_steam64(value):
+    return bool(re.fullmatch(r"\d{17}", collapse_whitespace(value) or ""))
+
+
+def resolve_player_name_from_steam_id(steam_id):
+    normalized = collapse_whitespace(steam_id)
+    if not normalized:
+        return ""
+    if not is_steam64(normalized):
+        raise ValueError("请提供 17 位 Steam64 ID")
+    payload = get_player_summary(normalized) or {}
+    return collapse_whitespace(payload.get("name"))
+
+
+def build_lookup_candidates(username="", steam_id="", include_resolved_name=False, steam_first=True):
+    candidates = []
+    normalized_username = collapse_whitespace(username)
+    normalized_steam_id = collapse_whitespace(steam_id)
+
+    def push(value):
+        normalized = collapse_whitespace(value)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    if steam_first:
+        push(normalized_steam_id)
+        push(normalized_username)
+    else:
+        push(normalized_username)
+
+    if include_resolved_name and normalized_steam_id:
+        resolved_name = resolve_player_name_from_steam_id(normalized_steam_id)
+        push(resolved_name)
+
+    if not steam_first:
+        push(normalized_steam_id)
+
+    if not candidates:
+        raise ValueError("请提供 17 位 Steam64 ID 或玩家名称")
+    return candidates
+
+
+def player_summary_has_matches(payload):
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        int(payload.get(key) or 0) > 0
+        for key in ["matchedCategories", "matchedGroups", "matchedStatistics"]
+    )
+
+
 def slugify_label(value):
     slug = re.sub(r"[^a-z0-9]+", "-", collapse_whitespace(value).casefold()).strip("-")
     return slug or "item"
@@ -2618,7 +2669,7 @@ def fetch_moose_player_summary(server_id, username, period_value=""):
     server = resolve_named_item(server_id, catalog["servers"], "服务器")
     normalized_username = collapse_whitespace(username)
     if not normalized_username:
-        raise ValueError("请提供玩家名称")
+        raise ValueError("请提供玩家名称或 Steam64")
 
     def builder():
         with moose_page_session() as page:
@@ -2641,6 +2692,7 @@ def fetch_moose_player_summary(server_id, username, period_value=""):
                 exact_matches = [
                     row for row in table["rows"]
                     if row.get("playerName", "").casefold() == normalized_username.casefold()
+                    or collapse_whitespace(row.get("steamId")).casefold() == normalized_username.casefold()
                 ]
                 selected_match = exact_matches[0] if exact_matches else (table["rows"][0] if table["rows"] else None)
                 categories.append({
@@ -3057,7 +3109,7 @@ def fetch_survivors_player_summary(server_id, username, period_value="wipe"):
     server = find_survivors_server(server_id)
     query = collapse_whitespace(username)
     if not query:
-        raise ValueError("请提供玩家名称")
+        raise ValueError("请提供玩家名称或 Steam64")
     period = normalize_survivors_mode(period_value)
 
     def builder():
@@ -3076,7 +3128,10 @@ def fetch_survivors_player_summary(server_id, username, period_value="wipe"):
                     "category": serialize_survivors_category(category),
                     "fields": [dict(field) for field in category["fields"]],
                     "matchCount": len(rows),
-                    "exactMatchCount": 1 if selected_match and collapse_whitespace(selected_match.get("playerName")).casefold() == query.casefold() else 0,
+                    "exactMatchCount": 1 if selected_match and (
+                        collapse_whitespace(selected_match.get("playerName")).casefold() == query.casefold()
+                        or collapse_whitespace(selected_match.get("steamId")).casefold() == query.casefold()
+                    ) else 0,
                     "selectedMatch": selected_match,
                     "matches": rows[:5],
                 })
@@ -3573,7 +3628,7 @@ def fetch_rusticated_player_summary(server_id, username, wipe_id=None):
     groups = [serialize_rusticated_group(group) for group in fetch_rusticated_stat_groups()]
     normalized_username = collapse_whitespace(username)
     if not normalized_username:
-        raise ValueError("请提供玩家名称")
+        raise ValueError("请提供玩家名称或 Steam64")
 
     results = []
     identity = None
@@ -3592,7 +3647,11 @@ def fetch_rusticated_player_summary(server_id, username, wipe_id=None):
             limit=10,
         )
         rows = payload.get("rows", [])
-        exact_matches = [row for row in rows if str(row.get("username", "")).casefold() == username_cf]
+        exact_matches = [
+            row for row in rows
+            if str(row.get("username", "")).casefold() == username_cf
+            or collapse_whitespace(row.get("steamId")).casefold() == username_cf
+        ]
         selected_match = max(exact_matches, key=rusticated_match_score) if exact_matches else (rows[0] if rows else None)
         results.append({
             "group": group,
@@ -3844,19 +3903,23 @@ def api_survivors_leaderboard(server_id, category_id):
 def api_survivors_player_search():
     server_id = request.args.get("serverId", "").strip()
     username = request.args.get("username", "").strip()
+    steam_id = request.args.get("steamId", "").strip()
     period = request.args.get("period", "").strip()
     if not server_id:
         return jsonify({"error": "请提供 serverId"}), 400
-    if not username:
-        return jsonify({"error": "请提供玩家名称"}), 400
     try:
-        return jsonify(fetch_survivors_player_summary(server_id, username, period))
+        last_payload = None
+        for query in build_lookup_candidates(username=username, steam_id=steam_id, include_resolved_name=bool(steam_id), steam_first=True):
+            last_payload = fetch_survivors_player_summary(server_id, query, period)
+            if player_summary_has_matches(last_payload):
+                break
+        return jsonify(last_payload)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
     except PlaywrightTimeoutError:
         return jsonify({"error": "Survivors 页面加载超时"}), 504
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3917,19 +3980,23 @@ def api_moose_leaderboard(server_id, category_id):
 def api_moose_player_search():
     server_id = request.args.get("serverId", "").strip()
     username = request.args.get("username", "").strip()
+    steam_id = request.args.get("steamId", "").strip()
     period = request.args.get("period", "").strip()
     if not server_id:
         return jsonify({"error": "请提供 serverId"}), 400
-    if not username:
-        return jsonify({"error": "请提供玩家名称"}), 400
     try:
-        return jsonify(fetch_moose_player_summary(server_id, username, period))
+        last_payload = None
+        for query in build_lookup_candidates(username=username, steam_id=steam_id, include_resolved_name=bool(steam_id), steam_first=True):
+            last_payload = fetch_moose_player_summary(server_id, query, period)
+            if player_summary_has_matches(last_payload):
+                break
+        return jsonify(last_payload)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
     except PlaywrightTimeoutError:
         return jsonify({"error": "Moose 页面加载超时"}), 504
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3996,13 +4063,17 @@ def api_rusticated_leaderboard(server_id, group_id):
 def api_rusticated_player_search():
     server_id = request.args.get("serverId", "").strip()
     username = request.args.get("username", "").strip()
+    steam_id = request.args.get("steamId", "").strip()
     wipe_id = request.args.get("wipeId", "").strip()
     if not server_id:
         return jsonify({"error": "请提供 serverId"}), 400
-    if not username:
-        return jsonify({"error": "请提供玩家名称"}), 400
     try:
-        return jsonify(fetch_rusticated_player_summary(server_id, username, wipe_id))
+        last_payload = None
+        for query in build_lookup_candidates(username=username, steam_id=steam_id, include_resolved_name=bool(steam_id), steam_first=True):
+            last_payload = fetch_rusticated_player_summary(server_id, query, wipe_id)
+            if player_summary_has_matches(last_payload):
+                break
+        return jsonify(last_payload)
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
     except ValueError as e:
@@ -4131,13 +4202,19 @@ def api_rustoria_leaderboard(server_id, statistic_id):
 def api_rustoria_player_search():
     server_id = request.args.get("serverId", "").strip()
     username = request.args.get("username", "").strip()
+    steam_id = request.args.get("steamId", "").strip()
     wipe = request.args.get("wipe", "").strip()
     if not server_id:
         return jsonify({"error": "请提供 serverId"}), 400
-    if not username:
-        return jsonify({"error": "请提供玩家名称"}), 400
     try:
-        return jsonify(fetch_rustoria_player_summary(server_id, username, wipe))
+        last_payload = None
+        for query in build_lookup_candidates(username=username, steam_id=steam_id, include_resolved_name=bool(steam_id), steam_first=False):
+            last_payload = fetch_rustoria_player_summary(server_id, query, wipe)
+            if player_summary_has_matches(last_payload):
+                break
+        return jsonify(last_payload)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
             return jsonify({"error": "找不到该 Rustoria 数据"}), 404

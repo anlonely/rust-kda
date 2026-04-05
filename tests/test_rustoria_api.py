@@ -212,3 +212,15 @@ def test_api_rustoria_player_search_aggregates_statistics(monkeypatch):
     assert payload["matchedStatistics"] == 2
     assert payload["statistics"][0]["selectedMatch"]["total"] == 55
     assert payload["statistics"][1]["selectedMatch"]["data"]["player_time_played"] == 7200
+
+
+def test_api_rustoria_player_search_accepts_steam_id(monkeypatch):
+    client = srv.app.test_client()
+    monkeypatch.setattr(srv, "cached_get", fake_rustoria_cached_get)
+    monkeypatch.setattr(srv, "get_player_summary", lambda steam_id: {"steamId": steam_id, "name": "cactus"})
+
+    response = client.get("/api/rustoria/player-search?serverId=alpha&steamId=76561198000000001")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["identity"]["username"] == "cactus"
