@@ -80,13 +80,14 @@ MOOSE_STATS_URL = "https://moose.gg/stats"
 MOOSE_CACHE_TTL = 180
 MOOSE_META_TTL = 1800
 MOOSE_INTERACTION_DELAY_MS = 1200
-MOOSE_BOOT_DELAY_MS = 8000
+MOOSE_BOOT_DELAY_MS = 1200
 SURVIVORS_URL = "https://survivors.gg/#leaderboards"
 SURVIVORS_API_BASE = "https://integration.rankeval.gg/apis/public"
 SURVIVORS_CACHE_TTL = 180
 SURVIVORS_META_TTL = 1800
 SURVIVORS_INTERACTION_DELAY_MS = 1400
 SURVIVORS_BOOT_DELAY_MS = 2500
+SURVIVORS_CATALOG_TIMEOUT_MS = 15000
 SURVIVORS_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
@@ -95,7 +96,7 @@ ATLAS_PLAYER_LOOKUP_URL = "https://atlasrust.com/player-lookup"
 ATLAS_API_PUBLIC_BASE = "https://services.atlasrust.com/api/public"
 ATLAS_CACHE_TTL = 180
 ATLAS_META_TTL = 1800
-ATLAS_INTERACTION_DELAY_MS = 2200
+ATLAS_INTERACTION_DELAY_MS = 1200
 
 # ── 简易内存缓存 ──
 _cache = {}
@@ -2245,17 +2246,25 @@ def moose_get_dropdown_options(page, combobox_index):
     combobox = get_combobox(page, combobox_index)
     if combobox.get_attribute("aria-disabled") == "true":
         return []
-    controls_id = combobox.get_attribute("aria-controls")
-    if not controls_id:
-        return []
-    combobox.click()
-    page.wait_for_timeout(250)
-    options = [
-        collapse_whitespace(text)
-        for text in moose_option_locator(page, controls_id).all_inner_texts()
-    ]
+    options = []
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        combobox.click()
+        page.wait_for_timeout(250)
+        controls_id = combobox.get_attribute("aria-controls")
+        if not controls_id:
+            page.keyboard.press("Escape")
+            continue
+        options = [
+            collapse_whitespace(text)
+            for text in moose_option_locator(page, controls_id).all_inner_texts()
+        ]
+        options = [option for option in options if option]
+        if options:
+            break
+        page.keyboard.press("Escape")
     page.keyboard.press("Escape")
-    return [option for option in options if option]
+    return options
 
 
 def moose_select_dropdown_value(page, combobox_index, option_name):
@@ -2657,13 +2666,46 @@ def survivors_stats_response_predicate(response):
     return response.status == 200 and "/leaderboards/stats" in response.url
 
 
+def extract_survivors_error(page):
+    body_text = collapse_whitespace(page.locator("body").inner_text())
+    for message in [
+        "Error: An unexpected error occurred.",
+        "You have been temporarily banned.",
+        "Access Denied.",
+    ]:
+        if message in body_text:
+            return message
+    return ""
+
+
 def survivors_open_catalog(page):
-    with page.expect_response(lambda response: response.status == 200 and response.url == f"{SURVIVORS_API_BASE}/init", timeout=120000) as init_info, \
-         page.expect_response(lambda response: response.status == 200 and "/apis/public/servers?" in response.url, timeout=120000) as servers_info:
-        page.goto(SURVIVORS_URL, wait_until="domcontentloaded", timeout=120000)
-    page.get_by_role("button", name="Current Wipe").first.wait_for(timeout=120000)
-    page.wait_for_timeout(SURVIVORS_BOOT_DELAY_MS)
-    return init_info.value.json(), servers_info.value.json()
+    captured = {"init": None, "servers": None}
+
+    def handle_response(response):
+        if response.status != 200:
+            return
+        if response.url == f"{SURVIVORS_API_BASE}/init" and captured["init"] is None:
+            captured["init"] = response
+        elif "/apis/public/servers?" in response.url and captured["servers"] is None:
+            captured["servers"] = response
+
+    page.on("response", handle_response)
+    page.goto(SURVIVORS_URL, wait_until="domcontentloaded", timeout=60000)
+
+    deadline = time.time() + (SURVIVORS_CATALOG_TIMEOUT_MS / 1000)
+    while time.time() < deadline:
+        visible_error = extract_survivors_error(page)
+        if visible_error:
+            raise RuntimeError(visible_error)
+        if captured["init"] is not None and captured["servers"] is not None:
+            page.wait_for_timeout(SURVIVORS_BOOT_DELAY_MS)
+            return captured["init"].json(), captured["servers"].json()
+        page.wait_for_timeout(500)
+
+    visible_error = extract_survivors_error(page)
+    if visible_error:
+        raise RuntimeError(visible_error)
+    raise PlaywrightTimeoutError("Survivors leaderboard catalog did not finish loading")
 
 
 def survivors_avatar_url(user_payload):
@@ -3048,7 +3090,7 @@ def atlas_page_session():
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
         )
         try:
-            page.goto(ATLAS_PLAYER_LOOKUP_URL, wait_until="networkidle", timeout=120000)
+            page.goto(ATLAS_PLAYER_LOOKUP_URL, wait_until="domcontentloaded", timeout=60000)
             yield page
         finally:
             context.close()
@@ -3266,14 +3308,18 @@ def fetch_atlas_player_summary(steam_id):
             search_input.wait_for(timeout=30000)
             search_input.fill(normalized_steam_id)
             page.get_by_role("button", name="Search").click()
-            page.wait_for_timeout(ATLAS_INTERACTION_DELAY_MS)
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                if response_info.get("status") is not None:
+                    break
+                visible_error = extract_atlas_error(page)
+                if visible_error:
+                    break
+                profile = extract_atlas_profile(page)
+                if profile.get("name") or profile.get("metrics") or profile.get("bans") or profile.get("clans"):
+                    break
+                page.wait_for_timeout(ATLAS_INTERACTION_DELAY_MS)
 
-            result_card = page.locator(".results-container")
-            if result_card.count():
-                try:
-                    result_card.first.wait_for(timeout=5000)
-                except PlaywrightTimeoutError:
-                    pass
             visible_error = extract_atlas_error(page)
             profile = extract_atlas_profile(page)
             return normalize_atlas_profile(
