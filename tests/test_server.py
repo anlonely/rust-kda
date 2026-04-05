@@ -158,6 +158,7 @@ def test_get_player_kda_maps_official_rust_schema_stat_names(monkeypatch):
             ]
         }
     }
+    monkeypatch.setattr(srv, "steam_api_key_set", lambda: True)
     monkeypatch.setattr(srv, "cached_get", lambda *args, **kwargs: payload)
 
     result = srv.get_player_kda("76561198067054205")
@@ -218,6 +219,7 @@ def test_search_bm_player_uses_supported_query_params(monkeypatch):
         captured["params"] = params
         return {"data": [{"id": "42", "attributes": {"name": "Demo", "lastSeen": "2026-04-03T00:00:00Z"}}]}
 
+    monkeypatch.setattr(srv, "battlemetrics_token_set", lambda: True)
     monkeypatch.setattr(srv, "cached_get", fake_cached_get)
 
     result = srv.search_bm_player("Sullivan")
