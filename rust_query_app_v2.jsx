@@ -1,6 +1,10 @@
-import { startTransition, useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, startTransition, useCallback, useEffect, useRef, useState } from "react";
+
+const loadLeaderboardHub = () => import("./src/leaderboard-hub.jsx");
+const LeaderboardHub = lazy(loadLeaderboardHub);
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+const PLAYER_QUERY_CACHE_TTL = 5 * 60 * 1000;
 const normalizeLang = (value) => String(value || "").toLowerCase().startsWith("zh") ? "zh" : "en";
 const defaultCurrencyForLang = (lang) => lang === "zh" ? "CNY" : "USD";
 const detectInitialLang = () => {
@@ -73,6 +77,29 @@ const convertMoney = (value, currency = "USD", usdToCny = null) => {
   return value;
 };
 
+const readPlayerQueryCache = (key) => {
+  if (typeof window === "undefined" || !key) return null;
+  try {
+    const raw = window.localStorage.getItem(`rust-kda-player-cache:${key}`);
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    if (!payload?.ts || Date.now() - payload.ts > PLAYER_QUERY_CACHE_TTL) return null;
+    return payload.data || null;
+  } catch {
+    return null;
+  }
+};
+
+const writePlayerQueryCache = (key, data) => {
+  if (typeof window === "undefined" || !key || !data) return;
+  try {
+    window.localStorage.setItem(
+      `rust-kda-player-cache:${key}`,
+      JSON.stringify({ ts: Date.now(), data }),
+    );
+  } catch {}
+};
+
 const RC = {
   legendary:{bg:"#1a0f00",bd:"#ff9800",tx:"#ffcc80",gw:"rgba(255,152,0,.25)"},
   epic:{bg:"#140022",bd:"#ab47bc",tx:"#ce93d8",gw:"rgba(171,71,188,.25)"},
@@ -104,6 +131,7 @@ const UI = {
     kdaTab: "KDA 数据",
     inventoryTab: "库存",
     serversTab: "服务器时长",
+    leaderboardHubTab: "排行榜站点",
     playerCreated: "创建于",
     online: "在线",
     inGame: "游戏中",
@@ -199,6 +227,7 @@ const UI = {
     kdaTab: "KDA",
     inventoryTab: "Inventory",
     serversTab: "Server Time",
+    leaderboardHubTab: "Leaderboard Sites",
     playerCreated: "Created",
     online: "Online",
     inGame: "In Game",
@@ -924,6 +953,8 @@ export default function App() {
   const [serverLoading,setServerLoading]=useState(false);
   const [serverError,setServerError]=useState("");
   const [demo,setDemo]=useState(false);
+  const queryControllerRef = useRef(null);
+  const queryCacheRef = useRef(new Map());
   const locale = lang === "zh" ? "zh-CN" : "en-US";
   const t = useCallback((key) => UI[lang]?.[key] || UI.zh[key] || key, [lang]);
   const formatMoneyValue = useCallback((value) => {
@@ -937,6 +968,24 @@ export default function App() {
       document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     }
   }, [lang]);
+
+  useEffect(() => () => {
+    queryControllerRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const idleHandle = window.requestIdleCallback
+      ? window.requestIdleCallback(() => loadLeaderboardHub())
+      : window.setTimeout(() => loadLeaderboardHub(), 1800);
+    return () => {
+      if (window.cancelIdleCallback && typeof idleHandle === "number") {
+        window.cancelIdleCallback(idleHandle);
+      } else {
+        window.clearTimeout(idleHandle);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!currencyManual) {
@@ -1046,46 +1095,74 @@ export default function App() {
   },[apiJson, t]);
 
   const query=useCallback(async()=>{
-    if(!steamId.trim()) return;
+    const normalizedSteamId = steamId.trim();
+    if(!normalizedSteamId) return;
+    const memoryCached = queryCacheRef.current.get(normalizedSteamId);
+    const cached = memoryCached || readPlayerQueryCache(normalizedSteamId);
+    if (cached) {
+      startTransition(()=>{
+        setLoading(false);
+        setDemo(false);
+        setPlayer(cached.player || null);
+        setKda(cached.kda || null);
+        setInv(cached.inv || null);
+        setSrv(null);
+        setServerCandidates(null);
+        setSelectedBmId("");
+        setServerLoading(false);
+        setServerError("");
+      });
+      queryCacheRef.current.set(normalizedSteamId, cached);
+      return;
+    }
+    queryControllerRef.current?.abort();
+    const controller = new AbortController();
+    queryControllerRef.current = controller;
     startTransition(()=>{
       setLoading(true);setPlayer(null);setKda(null);setInv(null);setSrv(null);setServerCandidates(null);setSelectedBmId("");setServerLoading(false);setServerError("");setDemo(false);
     });
     try {
-      const p=await apiJson(`/player/${steamId}`);
-      const [k,i,c]=await Promise.allSettled([
-        apiJson(`/kda/${steamId}`),
-        apiJson(`/inventory/${steamId}`),
-        apiJson(`/servers/candidates/${encodeURIComponent(steamId)}`),
+      const [p,k,i]=await Promise.allSettled([
+        apiJson(`/player/${normalizedSteamId}`, { signal: controller.signal }),
+        apiJson(`/kda/${normalizedSteamId}`, { signal: controller.signal }),
+        apiJson(`/inventory/${normalizedSteamId}`, { signal: controller.signal }),
       ]);
+      if (controller.signal.aborted) return;
+      if (p.status !== "fulfilled") {
+        throw p.reason || new Error(t("requestFailed"));
+      }
       startTransition(()=>{
-        setPlayer(p);
+        setPlayer(p.value);
         if(k.status==="fulfilled") setKda(k.value);
         if(i.status==="fulfilled") setInv(i.value);
-        if(c.status==="fulfilled" && !c.value?.error){
-          setServerCandidates(c.value);
-          if(c.value?.candidates?.length){
-            setSelectedBmId(c.value.candidates[0].bmId);
-          }else{
-            setServerError(t("noBmFound"));
-          }
-        }else{
-          setServerError(t("bmSearchFailed"));
-        }
       });
+      const cachePayload = {
+        player: p.value,
+        kda: k.status === "fulfilled" ? k.value : null,
+        inv: i.status === "fulfilled" ? i.value : null,
+      };
+      queryCacheRef.current.set(normalizedSteamId, cachePayload);
+      writePlayerQueryCache(normalizedSteamId, cachePayload);
     } catch (err) {
+      if (err?.name === "AbortError") return;
       startTransition(()=>{
         setDemo(true);
-        setPlayer({steamId,name:"Demo_Player",status:"演示模式",country:"CN",created:1609459200,lastLogoff:1712102400,playtimeHours:2890.4,playtimeTwoWeeksHours:36.5,achievementsCount:67});
-        setKda(DEMO.kda); setInv(DEMO.inventory); setSrv(DEMO.servers); setServerCandidates({steamId,playerName:"Demo_Player",candidates:[{bmId:"demo-1",name:"Demo_Player",score:100,sessionPreview:{count:4,hasMore:false},lastSeen:new Date().toISOString()}]}); setSelectedBmId("demo-1");
+        setPlayer({steamId:normalizedSteamId,name:"Demo_Player",status:"演示模式",country:"CN",created:1609459200,lastLogoff:1712102400,playtimeHours:2890.4,playtimeTwoWeeksHours:36.5,achievementsCount:67});
+        setKda(DEMO.kda); setInv(DEMO.inventory); setSrv(null); setServerCandidates(null); setSelectedBmId("");
       });
+    } finally {
+      if (queryControllerRef.current === controller) {
+        queryControllerRef.current = null;
+      }
+      startTransition(()=>setLoading(false));
     }
-    startTransition(()=>setLoading(false));
   },[apiJson, steamId, t]);
 
   const tabs=[
     {id:"kda",label:t("kdaTab"),icon:"⚔️",color:"#00e5ff"},
     {id:"inventory",label:t("inventoryTab"),icon:"💰",color:"#b388ff"},
-    {id:"servers",label:t("serversTab"),icon:"🖥️",color:"#4dd0e1"},
+    {id:"servers",label:t("serversTab"),icon:"🖥️",color:"#4dd0e1",disabled:true,hint:t("serversDevNotice")},
+    {id:"leaderboards",label:t("leaderboardHubTab"),icon:"📊",color:"#8df27b"},
   ];
   const isActiveStatus = ["在线", "游戏中", "Online", "In Game"].includes(player?.status);
   const rateText = currency === "CNY" && typeof usdToCny === "number"
@@ -1521,10 +1598,36 @@ export default function App() {
 
       {/* Tabs */}
       <div style={{position:"relative",zIndex:1,borderBottom:"1px solid rgba(255,255,255,.03)",background:"rgba(0,0,0,.15)"}} className="tab-shell">
-        {tabs.map(t=>(
-          <button className={`neon-button neon-tab ${tab===t.id?"active":""}`} key={t.id} onClick={()=>setTab(t.id)} style={{border:"none",background:tab===t.id?`${t.color}0d`:"transparent",color:tab===t.id?t.color:"#455a64",fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",transition:"all .2s"}}>
-            <span style={{fontSize:13}}>{t.icon}</span>{t.label}
-          </button>
+        {tabs.map((tabItem)=>(
+          <div key={tabItem.id} title={tabItem.disabled ? tabItem.hint : ""}>
+            <button
+              className={`neon-button neon-tab ${tab===tabItem.id?"active":""}`}
+              onClick={() => {
+                if (tabItem.disabled) return;
+                if (tabItem.id === "leaderboards") loadLeaderboardHub();
+                setTab(tabItem.id);
+              }}
+              onMouseEnter={() => {
+                if (tabItem.id === "leaderboards") loadLeaderboardHub();
+              }}
+              aria-disabled={tabItem.disabled ? "true" : "false"}
+              style={{
+                border:"none",
+                background:tab===tabItem.id?`${tabItem.color}0d`:"transparent",
+                color:tab===tabItem.id?tabItem.color:(tabItem.disabled?"#54606f":"#455a64"),
+                fontSize:12,
+                fontWeight:600,
+                cursor:tabItem.disabled?"not-allowed":"pointer",
+                display:"flex",
+                alignItems:"center",
+                transition:"all .2s",
+                opacity:tabItem.disabled?0.58:1,
+                filter:tabItem.disabled?"saturate(.45)":undefined,
+              }}
+            >
+              <span style={{fontSize:13}}>{tabItem.icon}</span>{tabItem.label}
+            </button>
+          </div>
         ))}
       </div>
 
@@ -1536,6 +1639,24 @@ export default function App() {
             <div style={{display:"inline-block",animation:"spin 1s linear infinite"}}><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="rgba(0,229,255,.24)" strokeWidth="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="#00e5ff" strokeWidth="3" strokeDasharray="40 36" strokeLinecap="round"/></svg></div>
             <div style={{fontSize:13,color:"#546e7a",marginTop:12,animation:"pulse 1.5s infinite"}}>{t("querying")}</div>
           </div>
+        ):tab==="leaderboards"?(
+          <>
+            {player&&(
+              <div className="player-shell">
+                {player.avatarMedium?<img src={player.avatarMedium} alt="" style={{width:48,height:48,borderRadius:12,border:"2px solid rgba(255,255,255,.08)"}}/>:<div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#00e5ff,#7c4dff)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff"}}>{player.name?.[0]?.toUpperCase()||"?"}</div>}
+                <div style={{flex:1,minWidth:220}}><div style={{fontSize:16,fontWeight:700,overflowWrap:"anywhere"}}>{player.name}</div><div style={{fontSize:11,color:"#455a64",fontFamily:"'JetBrains Mono',monospace",overflowWrap:"anywhere"}}>{player.steamId||steamId}</div></div>
+                <div style={{padding:"4px 10px",borderRadius:8,background:isActiveStatus?"rgba(102,187,106,.08)":"rgba(120,144,156,.08)",fontSize:11,fontWeight:600,color:isActiveStatus?"#66bb6a":"#78909c"}}>{translateStatus(lang, player.status)}</div>
+              </div>
+            )}
+            <Suspense fallback={<div className="neon-card" style={{padding:"14px 16px",borderRadius:14,background:"rgba(33,150,243,.08)",border:"1px solid rgba(33,150,243,.16)",color:"#90caf9",fontSize:12}}>{t("loading")}</div>}>
+              <LeaderboardHub
+                lang={lang}
+                locale={locale}
+                preferredPlayerName={player?.name || ""}
+                preferredSteamId={player?.steamId || steamId || ""}
+              />
+            </Suspense>
+          </>
         ):!player?(
           <div style={{textAlign:"center",padding:"60px 20px",color:"#263238"}}>
             <div style={{fontSize:52,marginBottom:14,opacity:.2}}>🎮</div>

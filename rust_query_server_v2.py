@@ -11,10 +11,16 @@ import re
 import os
 from html import unescape
 from pathlib import Path
+from contextlib import contextmanager
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 from datetime import datetime
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+except Exception:
+    PlaywrightTimeoutError = RuntimeError
+    sync_playwright = None
 
 
 def load_dotenv():
@@ -53,6 +59,43 @@ ALLOWED_ORIGINS = [
 RUST_APPID = 252490
 SCMM_BASE_URL = "https://rust.scmm.app/api"
 STEAM_ITEMSTORE_URL = f"https://store.steampowered.com/itemstore/{RUST_APPID}/ajaxgetitemdefs/"
+RUSTORIA_API_BASE = "https://api.rustoria.co"
+RUSTORIA_CACHE_TTL = 180
+RUSTORIA_MAPPING_TTL = 1800
+RUSTORIA_SERVER_TTL = 600
+RUSTORIA_COMPOSITION_RE = re.compile(r"@([a-z0-9_]+)")
+RUSTORIA_SPECIAL_FIELD_NAMES = {
+    "kdr": "KDR",
+    "accuracy": "Accuracy",
+    "total": "Total",
+}
+RUSTORIA_PERCENT_FIELDS = {"accuracy"}
+RUSTORIA_RATIO_FIELDS = {"kdr"}
+RUSTORIA_DURATION_FIELDS = {"player_time_played", "player_time_swimming"}
+RUSTICATED_API_BASE = "https://rusticated.com/api"
+RUSTICATED_ORG_ID = "1"
+RUSTICATED_CACHE_TTL = 180
+RUSTICATED_META_TTL = 1800
+MOOSE_STATS_URL = "https://moose.gg/stats"
+MOOSE_CACHE_TTL = 180
+MOOSE_META_TTL = 1800
+MOOSE_INTERACTION_DELAY_MS = 1200
+MOOSE_BOOT_DELAY_MS = 8000
+SURVIVORS_URL = "https://survivors.gg/#leaderboards"
+SURVIVORS_API_BASE = "https://integration.rankeval.gg/apis/public"
+SURVIVORS_CACHE_TTL = 180
+SURVIVORS_META_TTL = 1800
+SURVIVORS_INTERACTION_DELAY_MS = 1400
+SURVIVORS_BOOT_DELAY_MS = 2500
+SURVIVORS_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+)
+ATLAS_PLAYER_LOOKUP_URL = "https://atlasrust.com/player-lookup"
+ATLAS_API_PUBLIC_BASE = "https://services.atlasrust.com/api/public"
+ATLAS_CACHE_TTL = 180
+ATLAS_META_TTL = 1800
+ATLAS_INTERACTION_DELAY_MS = 2200
 
 # ── 简易内存缓存 ──
 _cache = {}
@@ -134,6 +177,15 @@ def cached_get(url, headers=None, params=None, ttl=300):
         except Exception:
             raise
     raise last_error
+
+
+def cached_compute(cache_key, ttl, builder):
+    now = time.time()
+    if cache_key in _cache and now - _cache[cache_key]["ts"] < ttl:
+        return _cache[cache_key]["data"]
+    data = builder()
+    _cache[cache_key] = {"data": data, "ts": now}
+    return data
 
 
 def fetch_scmm_price(item_name, currency="USD", ttl=1800):
@@ -1776,6 +1828,1733 @@ def get_player_servers(bm_player_id):
     }
 
 
+def rustoria_get(path, params=None, ttl=RUSTORIA_CACHE_TTL):
+    return cached_get(f"{RUSTORIA_API_BASE}{path}", params=params, ttl=ttl)
+
+
+def fetch_rustoria_servers():
+    servers = rustoria_get("/servers", ttl=RUSTORIA_SERVER_TTL)
+    return sorted(
+        servers,
+        key=lambda item: (
+            not bool(item.get("leaderboardServer")),
+            str(item.get("name", "")).casefold(),
+        ),
+    )
+
+
+def fetch_rustoria_server_detail(server_id):
+    return rustoria_get(f"/servers/find/{server_id}", ttl=RUSTORIA_SERVER_TTL)
+
+
+def fetch_rustoria_statistic_mappings():
+    return rustoria_get("/statistics/mappings", ttl=RUSTORIA_MAPPING_TTL)
+
+
+def fetch_rustoria_wipes(server_id):
+    return rustoria_get(f"/statistics/wipes/{server_id}", ttl=RUSTORIA_CACHE_TTL)
+
+
+def fetch_rustoria_leaderboard(server_id, statistic_id, from_value=0, sort_by="total", order_by="desc", username="", wipe=""):
+    params = {
+        "from": max(0, int(from_value)),
+        "sortBy": sort_by or "total",
+        "orderBy": "asc" if str(order_by).lower() == "asc" else "desc",
+        "username": username or "",
+        "wipe": wipe or "",
+    }
+    return rustoria_get(
+        f"/statistics/leaderboards/{server_id}/{statistic_id}",
+        params=params,
+        ttl=RUSTORIA_CACHE_TTL,
+    )
+
+
+def fetch_rustoria_leaderboard_totals(server_id, statistic_id, wipe=""):
+    return rustoria_get(
+        f"/statistics/leaderboard-totals/{server_id}/{statistic_id}",
+        params={"wipe": wipe or ""},
+        ttl=RUSTORIA_CACHE_TTL,
+    )
+
+
+def extract_rustoria_composition_fields(composition):
+    return RUSTORIA_COMPOSITION_RE.findall(composition or "")
+
+
+def humanize_rustoria_field(field_id):
+    if field_id in RUSTORIA_SPECIAL_FIELD_NAMES:
+        return RUSTORIA_SPECIAL_FIELD_NAMES[field_id]
+
+    words = []
+    for part in str(field_id or "").split("_"):
+        if not part:
+            continue
+        if part.upper() in {"PVP", "PVE", "KDR", "HQM"}:
+            words.append(part.upper())
+        else:
+            words.append(part.capitalize())
+    return " ".join(words) or field_id
+
+
+def rustoria_field_kind(field_id):
+    if field_id in RUSTORIA_PERCENT_FIELDS:
+        return "percent"
+    if field_id in RUSTORIA_RATIO_FIELDS:
+        return "ratio"
+    if field_id in RUSTORIA_DURATION_FIELDS:
+        return "duration"
+    return "number"
+
+
+def build_rustoria_field_meta(field_id, mappings):
+    mapping = mappings.get(field_id, {})
+    return {
+        "id": field_id,
+        "name": mapping.get("name") or humanize_rustoria_field(field_id),
+        "image": mapping.get("image"),
+        "kind": rustoria_field_kind(field_id),
+    }
+
+
+def dedupe_preserve(items):
+    seen = set()
+    ordered = []
+    for item in items:
+        if item in seen or item is None:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+def build_rustoria_field_ids(statistic, totals=None, leaderboard_rows=None):
+    composition_fields = extract_rustoria_composition_fields(statistic.get("composition"))
+    sample_keys = []
+
+    if leaderboard_rows:
+        for row in leaderboard_rows:
+            data = row.get("data") or {}
+            sample_keys.extend(list(data.keys()))
+            if sample_keys:
+                break
+
+    field_totals = (totals or {}).get("fieldTotals") or {}
+    sample_keys.extend(list(field_totals.keys()))
+
+    extras = [key for key in sample_keys if key not in composition_fields]
+    preferred_prefix = [key for key in ("kdr", "accuracy") if key in extras]
+    trailing = [key for key in extras if key not in preferred_prefix]
+    return dedupe_preserve(preferred_prefix + composition_fields + trailing)
+
+
+def serialize_rustoria_statistic(statistic, mappings, field_ids=None):
+    field_ids = field_ids or extract_rustoria_composition_fields(statistic.get("composition"))
+    return {
+        "id": statistic.get("id"),
+        "name": statistic.get("name"),
+        "display": statistic.get("display"),
+        "order": statistic.get("order"),
+        "defaultSort": statistic.get("default_sort"),
+        "composition": statistic.get("composition"),
+        "fields": [build_rustoria_field_meta(field_id, mappings) for field_id in field_ids],
+    }
+
+
+def find_rustoria_statistic(server_detail, statistic_id):
+    for statistic in server_detail.get("statistics", []):
+        if statistic.get("id") == statistic_id:
+            return statistic
+    return None
+
+
+def serialize_rustoria_server(server):
+    return {
+        "id": server.get("id"),
+        "name": server.get("name"),
+        "leaderboardServer": bool(server.get("leaderboardServer")),
+        "image": server.get("image"),
+        "bannerImage": server.get("bannerImage"),
+        "serverType": server.get("serverType"),
+        "groupLimit": server.get("groupLimit"),
+        "excludeGroupRules": server.get("excludeGroupRules"),
+        "gatherRate": server.get("gatherRate"),
+        "region": server.get("region"),
+    }
+
+
+def fetch_rustoria_player_summary(server_id, username, wipe=""):
+    server_detail = fetch_rustoria_server_detail(server_id)
+    mappings = fetch_rustoria_statistic_mappings()
+    username_cf = username.casefold()
+    statistics = []
+    identity = None
+
+    for statistic in sorted(server_detail.get("statistics", []), key=lambda item: item.get("order") or 999):
+        payload = fetch_rustoria_leaderboard(
+            server_id=server_id,
+            statistic_id=statistic.get("id"),
+            from_value=0,
+            sort_by=statistic.get("default_sort") or "total",
+            order_by="desc",
+            username=username,
+            wipe=wipe,
+        )
+        rows = payload.get("leaderboard", []) or []
+        exact_matches = [row for row in rows if str(row.get("username", "")).casefold() == username_cf]
+        selected_match = exact_matches[0] if exact_matches else (rows[0] if rows else None)
+        field_ids = build_rustoria_field_ids(statistic, leaderboard_rows=[selected_match] if selected_match else rows)
+        statistics.append({
+            "statistic": serialize_rustoria_statistic(statistic, mappings, field_ids),
+            "matchCount": len(rows),
+            "exactMatchCount": len(exact_matches),
+            "selectedMatch": selected_match,
+            "matches": rows[:5],
+        })
+        if selected_match and not identity:
+            identity = {
+                "rustoriaId": selected_match.get("rustoriaId"),
+                "username": selected_match.get("username"),
+                "avatar": selected_match.get("avatar"),
+                "private": selected_match.get("private"),
+            }
+
+    return {
+        "server": serialize_rustoria_server(server_detail),
+        "identity": identity,
+        "statistics": statistics,
+        "matchedStatistics": sum(1 for item in statistics if item.get("selectedMatch")),
+    }
+
+
+def collapse_whitespace(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def slugify_label(value):
+    slug = re.sub(r"[^a-z0-9]+", "-", collapse_whitespace(value).casefold()).strip("-")
+    return slug or "item"
+
+
+def numeric_value(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric != numeric:
+        return None
+    return numeric
+
+
+def build_moose_named_item(name, active=False, extra=None):
+    payload = {
+        "id": slugify_label(name),
+        "name": collapse_whitespace(name),
+        "active": bool(active),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def ensure_playwright_available():
+    if sync_playwright is None:
+        raise RuntimeError("当前环境缺少 Playwright，无法抓取 Moose 数据")
+
+
+SURVIVORS_CATEGORY_SPECS = [
+    {
+        "id": "overall",
+        "name": "OVERALL",
+        "sortBy": "rating_total",
+        "fields": [
+            {"id": "time_played", "name": "Time Played", "kind": "duration"},
+            {"id": "rating_pvp", "name": "PvP Rating", "kind": "number"},
+            {"id": "rating_events", "name": "Events Rating", "kind": "number"},
+            {"id": "rating_gather", "name": "Gather Rating", "kind": "number"},
+            {"id": "rating_explosives", "name": "Explosives Rating", "kind": "number"},
+            {"id": "rating_pve", "name": "PvE Rating", "kind": "number"},
+            {"id": "rating_total", "name": "Total Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "pvp",
+        "name": "PVP",
+        "sortBy": "rating_pvp",
+        "fields": [
+            {"id": "kills", "name": "Kills", "kind": "number"},
+            {"id": "deaths", "name": "Deaths", "kind": "number"},
+            {"id": "kdr", "name": "K/D", "kind": "ratio"},
+            {"id": "accuracy", "name": "Accuracy", "kind": "percent"},
+            {"id": "hs_accuracy", "name": "HS Accuracy", "kind": "percent"},
+            {"id": "longest_kill", "name": "Longest Kill", "kind": "number"},
+            {"id": "player_damage", "name": "Damage", "kind": "number"},
+            {"id": "bullets_fired", "name": "Bullets Fired", "kind": "number"},
+            {"id": "combat_effectiveness", "name": "Effectiveness", "kind": "number"},
+            {"id": "preferred_weapon", "name": "Preferred Weapon", "kind": "text"},
+            {"id": "rating_pvp", "name": "PvP Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "events",
+        "name": "EVENTS",
+        "sortBy": "rating_events",
+        "fields": [
+            {"id": "cargo_ship", "name": "Cargo Ship", "kind": "number"},
+            {"id": "oil_rig_large", "name": "Oil Rig Large", "kind": "number"},
+            {"id": "oil_rig_small", "name": "Oil Rig Small", "kind": "number"},
+            {"id": "bradley", "name": "Bradley Kills", "kind": "number"},
+            {"id": "bradley_damage", "name": "Bradley Damage", "kind": "number"},
+            {"id": "attack_heli", "name": "Attack Heli Kills", "kind": "number"},
+            {"id": "attack_heli_damage", "name": "Attack Heli Damage", "kind": "number"},
+            {"id": "keycard_green", "name": "Green Keycard", "kind": "number"},
+            {"id": "keycard_blue", "name": "Blue Keycard", "kind": "number"},
+            {"id": "keycard_red", "name": "Red Keycard", "kind": "number"},
+            {"id": "rating_events", "name": "Events Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "gathering",
+        "name": "GATHERING",
+        "sortBy": "rating_gather",
+        "fields": [
+            {"id": "gather_wood", "name": "Wood", "kind": "number"},
+            {"id": "gather_stone", "name": "Stone", "kind": "number"},
+            {"id": "gather_metal", "name": "Metal", "kind": "number"},
+            {"id": "gather_sulfur", "name": "Sulfur", "kind": "number"},
+            {"id": "gather_hqm", "name": "HQM", "kind": "number"},
+            {"id": "gather_scrap", "name": "Scrap", "kind": "number"},
+            {"id": "rating_gather", "name": "Harvest Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "farming",
+        "name": "FARMING",
+        "sortBy": "rating_gather",
+        "fields": [
+            {"id": "farming_corn", "name": "Corn", "kind": "number"},
+            {"id": "farming_pumpkin", "name": "Pumpkin", "kind": "number"},
+            {"id": "farming_potato", "name": "Potato", "kind": "number"},
+            {"id": "farming_berry", "name": "Berry", "kind": "number"},
+            {"id": "farming_hemp", "name": "Hemp", "kind": "number"},
+            {"id": "rating_gather", "name": "Harvest Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "explosives",
+        "name": "EXPLOSIVES",
+        "sortBy": "rating_explosives",
+        "fields": [
+            {"id": "explosives_c4", "name": "C4", "kind": "number"},
+            {"id": "explosives_satchel", "name": "Satchels", "kind": "number"},
+            {"id": "explosives_beancan", "name": "Beancans", "kind": "number"},
+            {"id": "explosives_f1grenade", "name": "F1 Grenades", "kind": "number"},
+            {"id": "explosives_rocket", "name": "Rockets", "kind": "number"},
+            {"id": "explosives_hvrocket", "name": "HV Rockets", "kind": "number"},
+            {"id": "explosives_incendiaryrocket", "name": "Incendiary Rockets", "kind": "number"},
+            {"id": "explosives_ammo", "name": "Explosive Ammo", "kind": "number"},
+            {"id": "rating_explosives", "name": "Explosives Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "pve-npc",
+        "name": "PVE NPC",
+        "sortBy": "rating_pve",
+        "fields": [
+            {"id": "scientist", "name": "Scientist", "kind": "number"},
+            {"id": "scientist_oilrig", "name": "Oil Rig Scientist", "kind": "number"},
+            {"id": "scientist_heavy", "name": "Heavy Scientist", "kind": "number"},
+            {"id": "scientist_excavator", "name": "Excavator Scientist", "kind": "number"},
+            {"id": "scientist_cargo", "name": "Cargo Scientist", "kind": "number"},
+            {"id": "scientist_ch47", "name": "CH47 Scientist", "kind": "number"},
+            {"id": "scientist_junkpile", "name": "Junkpile Scientist", "kind": "number"},
+            {"id": "tunnel_dweller", "name": "Tunnel Dweller", "kind": "number"},
+            {"id": "rating_pve", "name": "PvE Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "pve-animal",
+        "name": "PVE ANIMAL",
+        "sortBy": "rating_pve",
+        "fields": [
+            {"id": "animals_total", "name": "Animals", "kind": "number"},
+            {"id": "bear", "name": "Bear", "kind": "number"},
+            {"id": "boar", "name": "Boar", "kind": "number"},
+            {"id": "wolf", "name": "Wolf", "kind": "number"},
+            {"id": "horse", "name": "Horse", "kind": "number"},
+            {"id": "chicken", "name": "Chicken", "kind": "number"},
+            {"id": "deer", "name": "Deer", "kind": "number"},
+            {"id": "crocodile", "name": "Crocodile", "kind": "number"},
+            {"id": "tiger", "name": "Tiger", "kind": "number"},
+            {"id": "panther", "name": "Panther", "kind": "number"},
+            {"id": "snake", "name": "Snake", "kind": "number"},
+            {"id": "rating_pve", "name": "PvE Rating", "kind": "number"},
+        ],
+    },
+    {
+        "id": "gambling",
+        "name": "GAMBLING",
+        "sortBy": "gambling_total_won",
+        "fields": [
+            {"id": "gambling_blackjack_won", "name": "Blackjack Won", "kind": "number"},
+            {"id": "gambling_blackjack_bet", "name": "Blackjack Bet", "kind": "number"},
+            {"id": "gambling_slots_won", "name": "Slots Won", "kind": "number"},
+            {"id": "gambling_slots_bet", "name": "Slots Bet", "kind": "number"},
+            {"id": "gambling_poker_won", "name": "Poker Won", "kind": "number"},
+            {"id": "gambling_poker_bet", "name": "Poker Bet", "kind": "number"},
+            {"id": "gambling_wheel_won", "name": "Wheel Won", "kind": "number"},
+            {"id": "gambling_wheel_bet", "name": "Wheel Bet", "kind": "number"},
+            {"id": "gambling_total_won", "name": "Total Won", "kind": "number"},
+        ],
+    },
+]
+SURVIVORS_CATEGORY_LOOKUP = {item["id"]: item for item in SURVIVORS_CATEGORY_SPECS}
+SURVIVORS_PERIODS = [
+    {"id": "wipe", "name": "Current Wipe"},
+    {"id": "lifetime", "name": "Lifetime"},
+]
+
+
+@contextmanager
+def moose_page_session():
+    ensure_playwright_available()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1600, "height": 2400})
+        try:
+            page.goto(MOOSE_STATS_URL, wait_until="domcontentloaded", timeout=120000)
+            page.wait_for_timeout(MOOSE_BOOT_DELAY_MS)
+            page.locator("table").first.wait_for(timeout=120000)
+            yield page
+        finally:
+            browser.close()
+
+
+def get_combobox(page, index):
+    combobox = page.get_by_role("combobox").nth(index)
+    combobox.wait_for(timeout=30000)
+    return combobox
+
+
+def moose_option_locator(page, controls_id):
+    escaped_id = str(controls_id).replace("\\", "\\\\").replace('"', '\\"')
+    return page.locator(f'[id="{escaped_id}"] [role="option"]')
+
+
+def moose_get_dropdown_options(page, combobox_index):
+    combobox = get_combobox(page, combobox_index)
+    if combobox.get_attribute("aria-disabled") == "true":
+        return []
+    controls_id = combobox.get_attribute("aria-controls")
+    if not controls_id:
+        return []
+    combobox.click()
+    page.wait_for_timeout(250)
+    options = [
+        collapse_whitespace(text)
+        for text in moose_option_locator(page, controls_id).all_inner_texts()
+    ]
+    page.keyboard.press("Escape")
+    return [option for option in options if option]
+
+
+def moose_select_dropdown_value(page, combobox_index, option_name):
+    target = collapse_whitespace(option_name)
+    combobox = get_combobox(page, combobox_index)
+    current_label = collapse_whitespace(combobox.inner_text())
+    if current_label == target:
+        return current_label
+    controls_id = combobox.get_attribute("aria-controls")
+    if not controls_id:
+        raise RuntimeError("Moose 下拉菜单结构异常")
+    combobox.click()
+    page.wait_for_timeout(250)
+    option = moose_option_locator(page, controls_id).get_by_text(target, exact=True)
+    option.wait_for(timeout=5000)
+    option.click()
+    page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+    return collapse_whitespace(get_combobox(page, combobox_index).inner_text())
+
+
+def moose_active_server_name(page):
+    return collapse_whitespace(get_combobox(page, 0).inner_text()) or "Global"
+
+
+def moose_active_period_name(page):
+    return collapse_whitespace(get_combobox(page, 1).inner_text()) or "All Time"
+
+
+def dedupe_named_items(items):
+    seen = set()
+    ordered = []
+    for item in items:
+        item_id = item.get("id")
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        ordered.append(item)
+    return ordered
+
+
+def fetch_moose_catalog():
+    def builder():
+        with moose_page_session() as page:
+            servers = [{"id": "global", "name": "Global", "active": True}]
+            servers.extend(
+                build_moose_named_item(name)
+                for name in moose_get_dropdown_options(page, 0)
+            )
+            categories = [
+                build_moose_named_item(name)
+                for name in page.get_by_role("tab").all_inner_texts()
+                if collapse_whitespace(name)
+            ]
+            return {
+                "source": MOOSE_STATS_URL,
+                "servers": dedupe_named_items(servers),
+                "categories": dedupe_named_items(categories),
+            }
+
+    return cached_compute("moose:catalog", MOOSE_META_TTL, builder)
+
+
+def resolve_named_item(item_id, items, item_label):
+    lookup = collapse_whitespace(item_id).casefold()
+    for item in items:
+        if str(item.get("id", "")).casefold() == lookup or str(item.get("name", "")).casefold() == lookup:
+            return item
+    raise KeyError(f"找不到该 Moose {item_label}")
+
+
+def moose_collect_periods(page):
+    periods = [build_moose_named_item("All Time", active=moose_active_period_name(page) == "All Time")]
+    periods.extend(
+        build_moose_named_item(name, active=(name == moose_active_period_name(page)))
+        for name in moose_get_dropdown_options(page, 1)
+    )
+    return dedupe_named_items(periods)
+
+
+def fetch_moose_server_detail(server_id):
+    catalog = fetch_moose_catalog()
+    server = resolve_named_item(server_id, catalog["servers"], "服务器")
+
+    def builder():
+        with moose_page_session() as page:
+            if server["name"] != "Global":
+                moose_select_dropdown_value(page, 0, server["name"])
+            return {
+                "server": {
+                    **server,
+                    "active": True,
+                },
+                "periods": moose_collect_periods(page),
+                "categories": catalog["categories"],
+            }
+
+    return cached_compute(f"moose:server-detail:{server['id']}", MOOSE_CACHE_TTL, builder)
+
+
+def moose_select_server(page, server):
+    if server["name"] == "Global":
+        return "Global"
+    return moose_select_dropdown_value(page, 0, server["name"])
+
+
+def resolve_moose_period(period_value, periods):
+    if not period_value:
+        return periods[0]
+    lookup = collapse_whitespace(period_value).casefold()
+    for period in periods:
+        if str(period.get("id", "")).casefold() == lookup or str(period.get("name", "")).casefold() == lookup:
+            return period
+    raise KeyError("找不到该时间范围")
+
+
+def moose_select_period(page, period):
+    if period["name"] == "All Time":
+        return "All Time"
+    return moose_select_dropdown_value(page, 1, period["name"])
+
+
+def moose_select_category(page, category):
+    tabs = page.locator("[role='tab']")
+    target_id = category["id"]
+    for index in range(tabs.count()):
+        tab = tabs.nth(index)
+        if slugify_label(tab.inner_text()) == target_id:
+            tab.click()
+            page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+            return
+    raise KeyError(f"找不到该 Moose 统计类型: {category['name']}")
+
+
+def moose_search_player(page, player_name):
+    search_box = page.get_by_placeholder("Search...")
+    search_box.fill("")
+    page.wait_for_timeout(200)
+    if player_name:
+        search_box.fill(player_name)
+        page.wait_for_timeout(300)
+        search_box.press("Enter")
+    page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+
+
+def parse_moose_steam_id(url):
+    if not url:
+        return None
+    match = re.search(r"/profiles/(\d+)", url)
+    return match.group(1) if match else None
+
+
+def serialize_moose_field(header):
+    return {
+        "id": slugify_label(header),
+        "name": collapse_whitespace(header),
+        "kind": "text",
+    }
+
+
+def moose_current_page(page):
+    active_button = page.locator("button.rz-pager-page.rz-state-active")
+    if active_button.count() == 0:
+        return 1
+    try:
+        return int(collapse_whitespace(active_button.first.inner_text()) or "1")
+    except ValueError:
+        return 1
+
+
+def moose_click_pager(page, aria_label):
+    button = page.get_by_role("button", name=aria_label)
+    if button.count() == 0:
+        return False
+    classes = button.first.get_attribute("class") or ""
+    if "rz-state-disabled" in classes:
+        return False
+    button.first.click()
+    page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+    return True
+
+
+def moose_pager_enabled(page, aria_label):
+    button = page.get_by_role("button", name=aria_label)
+    if button.count() == 0:
+        return False
+    classes = button.first.get_attribute("class") or ""
+    return "rz-state-disabled" not in classes
+
+
+def moose_go_to_page(page, target_page):
+    target = max(1, int(target_page or 1))
+    direct_button = page.get_by_role("button", name=f"Go to page {target}.")
+    if direct_button.count():
+        classes = direct_button.first.get_attribute("class") or ""
+        if "rz-state-active" not in classes:
+            direct_button.first.click()
+            page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+        return moose_current_page(page)
+
+    current = moose_current_page(page)
+    guard = 0
+    while current < target and guard < 200:
+        if not moose_click_pager(page, "Go to next page."):
+            break
+        next_page = moose_current_page(page)
+        if next_page == current:
+            break
+        current = next_page
+        guard += 1
+    while current > target and guard < 400:
+        if not moose_click_pager(page, "Go to previous page."):
+            break
+        prev_page = moose_current_page(page)
+        if prev_page == current:
+            break
+        current = prev_page
+        guard += 1
+    return current
+
+
+def moose_visible_pages(page):
+    visible = []
+    buttons = page.locator("button.rz-pager-page")
+    for index in range(buttons.count()):
+        button = buttons.nth(index)
+        label = collapse_whitespace(button.inner_text())
+        if not label:
+            continue
+        visible.append({
+            "page": int(label),
+            "active": "rz-state-active" in (button.get_attribute("class") or ""),
+        })
+    return visible
+
+
+def moose_extract_table(page, page_number):
+    headers = [collapse_whitespace(text) for text in page.locator("table thead th").all_inner_texts()]
+    fields = [serialize_moose_field(header) for header in headers[1:]]
+    rows = []
+    table_rows = page.locator("table tbody tr")
+
+    for index in range(table_rows.count()):
+        row = table_rows.nth(index)
+        texts = [collapse_whitespace(text) for text in row.locator("td").all_inner_texts()]
+        texts = [text for text in texts if text]
+        if not texts:
+            continue
+        if len(texts) == 1 and texts[0].casefold() == "no items to display.":
+            continue
+
+        player_cell = row.locator("td").nth(0)
+        player_link = player_cell.locator("a")
+        player_image = player_cell.locator("img")
+        player_url = player_link.first.get_attribute("href") if player_link.count() else None
+        avatar = player_image.first.get_attribute("src") if player_image.count() else None
+        values = {
+            field["id"]: texts[field_index + 1] if field_index + 1 < len(texts) else ""
+            for field_index, field in enumerate(fields)
+        }
+        rows.append({
+            "rank": (page_number - 1) * 25 + len(rows) + 1,
+            "playerName": texts[0],
+            "avatar": avatar,
+            "playerUrl": player_url,
+            "steamId": parse_moose_steam_id(player_url),
+            "values": values,
+        })
+
+    return {
+        "headers": headers,
+        "fields": fields,
+        "rows": rows,
+        "pagination": {
+            "currentPage": moose_current_page(page),
+            "visiblePages": moose_visible_pages(page),
+            "hasPrevious": moose_pager_enabled(page, "Go to previous page."),
+            "hasNext": moose_pager_enabled(page, "Go to next page."),
+            "pageSize": len(rows),
+        },
+    }
+
+
+def fetch_moose_leaderboard(server_id, category_id, period_value="", search="", page_number=1):
+    catalog = fetch_moose_catalog()
+    server = resolve_named_item(server_id, catalog["servers"], "服务器")
+    category = resolve_named_item(category_id, catalog["categories"], "统计类型")
+    normalized_search = collapse_whitespace(search)
+
+    def builder():
+        with moose_page_session() as page:
+            moose_select_server(page, server)
+            periods = moose_collect_periods(page)
+            period = resolve_moose_period(period_value, periods)
+            if period["name"] != "All Time":
+                moose_select_period(page, period)
+            moose_select_category(page, category)
+            if normalized_search:
+                moose_search_player(page, normalized_search)
+            current_page = moose_go_to_page(page, page_number)
+            table = moose_extract_table(page, current_page)
+            return {
+                "server": {**server, "active": True},
+                "category": category,
+                "period": period,
+                "fields": table["fields"],
+                "headers": table["headers"],
+                "rows": table["rows"],
+                "pagination": table["pagination"],
+                "query": {
+                    "serverId": server["id"],
+                    "categoryId": category["id"],
+                    "period": period["name"],
+                    "search": normalized_search,
+                    "page": current_page,
+                },
+            }
+
+    cache_key = f"moose:leaderboard:{server['id']}:{category['id']}:{slugify_label(period_value or 'all-time')}:{slugify_label(normalized_search or 'all')}:{int(page_number or 1)}"
+    return cached_compute(cache_key, MOOSE_CACHE_TTL, builder)
+
+
+def fetch_moose_player_summary(server_id, username, period_value=""):
+    catalog = fetch_moose_catalog()
+    server = resolve_named_item(server_id, catalog["servers"], "服务器")
+    normalized_username = collapse_whitespace(username)
+    if not normalized_username:
+        raise ValueError("请提供玩家名称")
+
+    def builder():
+        with moose_page_session() as page:
+            moose_select_server(page, server)
+            periods = moose_collect_periods(page)
+            period = resolve_moose_period(period_value, periods)
+            if period["name"] != "All Time":
+                moose_select_period(page, period)
+
+            categories = []
+            identity = None
+
+            for index, category in enumerate(catalog["categories"]):
+                moose_select_category(page, category)
+                if index == 0:
+                    moose_search_player(page, normalized_username)
+                else:
+                    page.wait_for_timeout(MOOSE_INTERACTION_DELAY_MS)
+                table = moose_extract_table(page, 1)
+                exact_matches = [
+                    row for row in table["rows"]
+                    if row.get("playerName", "").casefold() == normalized_username.casefold()
+                ]
+                selected_match = exact_matches[0] if exact_matches else (table["rows"][0] if table["rows"] else None)
+                categories.append({
+                    "category": category,
+                    "fields": table["fields"],
+                    "matchCount": len(table["rows"]),
+                    "exactMatchCount": len(exact_matches),
+                    "selectedMatch": selected_match,
+                    "matches": table["rows"][:5],
+                })
+                if selected_match and not identity:
+                    identity = {
+                        "playerName": selected_match.get("playerName"),
+                        "avatar": selected_match.get("avatar"),
+                        "playerUrl": selected_match.get("playerUrl"),
+                        "steamId": selected_match.get("steamId"),
+                    }
+
+            return {
+                "server": {**server, "active": True},
+                "period": period,
+                "identity": identity,
+                "categories": categories,
+                "matchedCategories": sum(1 for item in categories if item.get("selectedMatch")),
+            }
+
+    cache_key = f"moose:player:{server['id']}:{slugify_label(period_value or 'all-time')}:{slugify_label(normalized_username)}"
+    return cached_compute(cache_key, MOOSE_CACHE_TTL, builder)
+
+
+@contextmanager
+def survivors_page_session():
+    ensure_playwright_available()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": 1600, "height": 2400},
+            locale="en-US",
+            user_agent=SURVIVORS_USER_AGENT,
+        )
+        page = context.new_page()
+        try:
+            yield page
+        finally:
+            context.close()
+            browser.close()
+
+
+def survivors_stats_response_predicate(response):
+    return response.status == 200 and "/leaderboards/stats" in response.url
+
+
+def survivors_open_catalog(page):
+    with page.expect_response(lambda response: response.status == 200 and response.url == f"{SURVIVORS_API_BASE}/init", timeout=120000) as init_info, \
+         page.expect_response(lambda response: response.status == 200 and "/apis/public/servers?" in response.url, timeout=120000) as servers_info:
+        page.goto(SURVIVORS_URL, wait_until="domcontentloaded", timeout=120000)
+    page.get_by_role("button", name="Current Wipe").first.wait_for(timeout=120000)
+    page.wait_for_timeout(SURVIVORS_BOOT_DELAY_MS)
+    return init_info.value.json(), servers_info.value.json()
+
+
+def survivors_avatar_url(user_payload):
+    avatar_hash = (user_payload or {}).get("avatar_hash")
+    if not avatar_hash:
+        return ""
+    return f"https://avatars.steamstatic.com/{avatar_hash}_full.jpg"
+
+
+def survivors_period_options(active_mode="wipe"):
+    normalized = "lifetime" if str(active_mode).strip().casefold() == "lifetime" else "wipe"
+    return [
+        {**item, "active": item["id"] == normalized}
+        for item in SURVIVORS_PERIODS
+    ]
+
+
+def survivors_mode_button_label(mode_value):
+    normalized = str(mode_value or "").strip().casefold()
+    if normalized == "lifetime":
+        return "Lifetime"
+    if normalized == "teams":
+        return "Teams"
+    return "Current Wipe"
+
+
+def normalize_survivors_mode(mode_value):
+    normalized = str(mode_value or "").strip().casefold()
+    if normalized == "lifetime":
+        return "lifetime"
+    if normalized == "teams":
+        return "teams"
+    return "wipe"
+
+
+def serialize_survivors_server(server, active=False, index=None):
+    return {
+        "id": server.get("id") or slugify_label(server.get("title") or server.get("tag") or "server"),
+        "name": collapse_whitespace(server.get("title") or server.get("tag") or "Unknown"),
+        "tag": collapse_whitespace(server.get("tag") or ""),
+        "address": server.get("address"),
+        "port": server.get("port"),
+        "players": server.get("players"),
+        "maxPlayers": server.get("max_players"),
+        "queue": server.get("queue"),
+        "teamLimit": server.get("team_limit"),
+        "lastWipe": server.get("last_wipe"),
+        "gatherRate": server.get("gather_rate"),
+        "region": collapse_whitespace(server.get("region") or "").upper(),
+        "active": bool(active),
+        "position": index,
+    }
+
+
+def serialize_survivors_category(category):
+    return {
+        "id": category["id"],
+        "name": category["name"],
+        "active": False,
+        "defaultSort": category["sortBy"],
+        "fields": [dict(field) for field in category["fields"]],
+    }
+
+
+def survivors_resolve_category(category_id):
+    lookup = slugify_label(category_id)
+    if lookup not in SURVIVORS_CATEGORY_LOOKUP:
+        raise KeyError("找不到该 Survivors 统计类型")
+    return SURVIVORS_CATEGORY_LOOKUP[lookup]
+
+
+def survivors_collect_categories():
+    return [serialize_survivors_category(item) for item in SURVIVORS_CATEGORY_SPECS]
+
+
+def fetch_survivors_catalog():
+    def builder():
+        with survivors_page_session() as page:
+            _, servers_payload = survivors_open_catalog(page)
+        servers = [
+            serialize_survivors_server(server, active=(index == 0), index=index)
+            for index, server in enumerate(servers_payload.get("results", []) or [])
+        ]
+        return {
+            "source": SURVIVORS_URL,
+            "servers": servers,
+            "categories": survivors_collect_categories(),
+        }
+
+    return cached_compute("survivors:catalog", SURVIVORS_META_TTL, builder)
+
+
+def find_survivors_server(server_id):
+    catalog = fetch_survivors_catalog()
+    return resolve_named_item(server_id, catalog["servers"], "服务器")
+
+
+def survivors_click_server_mode(page, server, button_label):
+    position = server.get("position")
+    if position is not None:
+        buttons = page.get_by_role("button", name=button_label)
+        if buttons.count() > position:
+            buttons.nth(position).click()
+            return
+
+    aliases = [
+        collapse_whitespace(server.get("name")),
+        collapse_whitespace(server.get("tag")),
+    ]
+    aliases = [item for item in aliases if item]
+    if not aliases:
+        raise KeyError("Survivors 服务器信息不完整")
+
+    clicked = page.evaluate(
+        """
+        ({ aliases, buttonLabel }) => {
+          const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+          const candidates = Array.from(document.querySelectorAll("*"));
+          for (const alias of aliases) {
+            const target = candidates.find((node) => normalize(node.textContent) === normalize(alias));
+            if (!target) continue;
+            let container = target;
+            while (container) {
+              const button = Array.from(container.querySelectorAll("button")).find(
+                (item) => normalize(item.textContent) === normalize(buttonLabel)
+              );
+              if (button) {
+                button.click();
+                return true;
+              }
+              container = container.parentElement;
+            }
+          }
+          return false;
+        }
+        """,
+        {"aliases": aliases, "buttonLabel": button_label},
+    )
+    if not clicked:
+        raise KeyError("找不到该 Survivors 服务器或模式按钮")
+
+
+def survivors_open_server(page, server, mode_value="wipe"):
+    button_label = survivors_mode_button_label(mode_value)
+    with page.expect_response(lambda response: response.status == 200 and response.url == f"{SURVIVORS_API_BASE}/server", timeout=120000) as server_info, \
+         page.expect_response(survivors_stats_response_predicate, timeout=120000) as stats_info:
+        survivors_click_server_mode(page, server, button_label)
+    page.wait_for_timeout(SURVIVORS_INTERACTION_DELAY_MS)
+    return server_info.value.json(), stats_info.value.json()
+
+
+def survivors_search_player(page, search_value):
+    query = collapse_whitespace(search_value)
+    search_box = page.get_by_role("textbox", name="Search player by Name or Steam ID")
+    search_box.wait_for(timeout=30000)
+    with page.expect_response(survivors_stats_response_predicate, timeout=120000) as stats_info:
+        search_box.fill(query)
+        search_box.press("Enter")
+    page.wait_for_timeout(SURVIVORS_INTERACTION_DELAY_MS)
+    return stats_info.value.json()
+
+
+def survivors_pager_enabled(page, label):
+    button = page.get_by_role("button", name=label)
+    if button.count() == 0:
+        return False
+    return button.first.is_enabled()
+
+
+def survivors_go_to_page(page, page_number):
+    target = max(1, int(page_number or 1))
+    if target == 1:
+        return None
+
+    direct_button = page.get_by_role("button", name=f"Go to page {target}")
+    if direct_button.count():
+        with page.expect_response(survivors_stats_response_predicate, timeout=120000) as stats_info:
+            direct_button.first.click()
+        page.wait_for_timeout(SURVIVORS_INTERACTION_DELAY_MS)
+        return stats_info.value.json()
+
+    latest_payload = None
+    for _ in range(1, target):
+        next_button = page.get_by_role("button", name="Next page")
+        if next_button.count() == 0 or not next_button.first.is_enabled():
+            break
+        with page.expect_response(survivors_stats_response_predicate, timeout=120000) as stats_info:
+            next_button.first.click()
+        latest_payload = stats_info.value.json()
+        page.wait_for_timeout(SURVIVORS_INTERACTION_DELAY_MS)
+    return latest_payload
+
+
+def survivors_preferred_weapon(row):
+    weapon_stats = row.get("weapon_stats") or {}
+    excluded = {"id", "user_id", "server_id", "organization_id"}
+    top_item = None
+    top_value = 0
+    for key, value in weapon_stats.items():
+        if key in excluded:
+            continue
+        numeric = numeric_value(value)
+        if numeric is None or numeric <= 0:
+            continue
+        if numeric > top_value:
+            top_item = key
+            top_value = numeric
+    if not top_item:
+        return ""
+    return collapse_whitespace(top_item.replace("_", " ").upper())
+
+
+def survivors_category_value(row, field_id):
+    if field_id == "kdr":
+        kills = numeric_value(row.get("kills")) or 0
+        deaths = numeric_value(row.get("deaths")) or 0
+        return kills if deaths <= 0 else round(kills / deaths, 2)
+    if field_id == "animals_total":
+        return sum(
+            int(numeric_value(row.get(name)) or 0)
+            for name in ["bear", "boar", "wolf", "horse", "chicken", "deer", "crocodile", "tiger", "panther", "snake"]
+        )
+    if field_id == "preferred_weapon":
+        return survivors_preferred_weapon(row)
+    if field_id == "gambling_total_won":
+        return sum(
+            int(numeric_value(row.get(name)) or 0)
+            for name in [
+                "gambling_blackjack_won",
+                "gambling_slots_won",
+                "gambling_poker_won",
+                "gambling_wheel_won",
+            ]
+        )
+    value = row.get(field_id)
+    numeric = numeric_value(value)
+    return int(numeric) if numeric is not None and float(numeric).is_integer() else (numeric if numeric is not None else value)
+
+
+def survivors_build_rows(payload, category, page_number=1, per_page=15):
+    rows = payload.get("results", []) or []
+    offset = max(0, (max(1, int(page_number or 1)) - 1) * max(1, int(per_page or 15)))
+    category_fields = category["fields"]
+    serialized = []
+    for index, row in enumerate(rows):
+        user = row.get("user") or {}
+        values = {
+            field["id"]: survivors_category_value(row, field["id"])
+            for field in category_fields
+        }
+        serialized.append({
+            "rank": offset + index + 1,
+            "playerName": user.get("name") or user.get("steam_id") or row.get("user_id") or "—",
+            "steamId": user.get("steam_id"),
+            "avatar": survivors_avatar_url(user),
+            "values": values,
+            "stats": values,
+        })
+    return serialized
+
+
+def survivors_select_match(rows, username):
+    needle = collapse_whitespace(username)
+    if not rows:
+        return None
+    needle_casefold = needle.casefold()
+    for row in rows:
+        if collapse_whitespace(row.get("playerName")).casefold() == needle_casefold:
+            return row
+        if collapse_whitespace(row.get("steamId")).casefold() == needle_casefold:
+            return row
+    return rows[0]
+
+
+def fetch_survivors_server_detail(server_id):
+    server = find_survivors_server(server_id)
+    return {
+        "server": {**server, "active": True},
+        "periods": survivors_period_options("wipe"),
+        "categories": survivors_collect_categories(),
+    }
+
+
+def fetch_survivors_leaderboard(server_id, category_id, period_value="wipe", search="", page_number=1):
+    server = find_survivors_server(server_id)
+    category = survivors_resolve_category(category_id)
+    period = normalize_survivors_mode(period_value)
+    query = collapse_whitespace(search)
+    page_number = max(1, int(page_number or 1))
+
+    def builder():
+        with survivors_page_session() as page:
+            survivors_open_catalog(page)
+            server_payload, stats_payload = survivors_open_server(page, server, period)
+            if query:
+                stats_payload = survivors_search_player(page, query)
+            if page_number > 1:
+                next_payload = survivors_go_to_page(page, page_number)
+                if next_payload:
+                    stats_payload = next_payload
+            return {
+                "server": serialize_survivors_server(server_payload, active=True),
+                "category": serialize_survivors_category(category),
+                "period": next(item for item in survivors_period_options(period) if item["active"]),
+                "fields": [dict(field) for field in category["fields"]],
+                "rows": survivors_build_rows(stats_payload, category, page_number=page_number),
+                "total": int(stats_payload.get("total") or 0),
+                "query": {
+                    "serverId": server["id"],
+                    "categoryId": category["id"],
+                    "period": period,
+                    "search": query,
+                    "page": page_number,
+                },
+            }
+
+    cache_key = f"survivors:leaderboard:{server['id']}:{category['id']}:{period}:{slugify_label(query or 'all')}:{page_number}"
+    return cached_compute(cache_key, SURVIVORS_CACHE_TTL, builder)
+
+
+def fetch_survivors_player_summary(server_id, username, period_value="wipe"):
+    server = find_survivors_server(server_id)
+    query = collapse_whitespace(username)
+    if not query:
+        raise ValueError("请提供玩家名称")
+    period = normalize_survivors_mode(period_value)
+
+    def builder():
+        with survivors_page_session() as page:
+            survivors_open_catalog(page)
+            server_payload, stats_payload = survivors_open_server(page, server, period)
+            stats_payload = survivors_search_player(page, query)
+
+            identity = None
+            categories = []
+
+            for category in SURVIVORS_CATEGORY_SPECS:
+                rows = survivors_build_rows(stats_payload, category, page_number=1)
+                selected_match = survivors_select_match(rows, query)
+                categories.append({
+                    "category": serialize_survivors_category(category),
+                    "fields": [dict(field) for field in category["fields"]],
+                    "matchCount": len(rows),
+                    "exactMatchCount": 1 if selected_match and collapse_whitespace(selected_match.get("playerName")).casefold() == query.casefold() else 0,
+                    "selectedMatch": selected_match,
+                    "matches": rows[:5],
+                })
+                if selected_match and not identity:
+                    identity = {
+                        "playerName": selected_match.get("playerName"),
+                        "avatar": selected_match.get("avatar"),
+                        "steamId": selected_match.get("steamId"),
+                    }
+
+            return {
+                "server": serialize_survivors_server(server_payload, active=True),
+                "period": next(item for item in survivors_period_options(period) if item["active"]),
+                "identity": identity,
+                "categories": categories,
+                "matchedCategories": sum(1 for item in categories if item.get("selectedMatch")),
+            }
+
+    cache_key = f"survivors:player:{server['id']}:{period}:{slugify_label(query)}"
+    return cached_compute(cache_key, SURVIVORS_CACHE_TTL, builder)
+
+
+@contextmanager
+def atlas_page_session():
+    ensure_playwright_available()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context(
+            viewport={"width": 1600, "height": 2400},
+            locale="en-US",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.39 Safari/537.36",
+        )
+        page = context.new_page()
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+        try:
+            page.goto(ATLAS_PLAYER_LOOKUP_URL, wait_until="networkidle", timeout=120000)
+            yield page
+        finally:
+            context.close()
+            browser.close()
+
+
+def validate_atlas_steam_id(steam_id):
+    normalized = collapse_whitespace(steam_id)
+    if not re.fullmatch(r"\d{17}", normalized or ""):
+        raise ValueError("请提供 17 位 Steam64 ID")
+    return normalized
+
+
+def fetch_atlas_meta():
+    def builder():
+        return {
+            "source": ATLAS_PLAYER_LOOKUP_URL,
+            "lookupMode": "steam64",
+            "requiresSteamId": True,
+            "playerFields": [
+                "steam_id",
+                "name",
+                "country",
+                "bm_player_id",
+                "bm_hours",
+                "atlas_hours",
+                "stats_global",
+                "bans",
+                "isOnline",
+            ],
+        }
+
+    return cached_compute("atlas:meta", ATLAS_META_TTL, builder)
+
+
+def atlas_collect_response_info(page):
+    response_info = {"status": None, "url": None}
+
+    def handle_response(response):
+        if response.url.startswith(f"{ATLAS_API_PUBLIC_BASE}/player/"):
+            response_info["status"] = response.status
+            response_info["url"] = response.url
+
+    page.on("response", handle_response)
+    return response_info
+
+
+def extract_atlas_error(page):
+    for message in [
+        "Invalid Steam64 ID Provided",
+        "Player not found or error fetching data",
+        "Error: An unexpected error occurred.",
+        "Access Denied.",
+    ]:
+        locator = page.get_by_text(message, exact=False)
+        if locator.count():
+            text = collapse_whitespace(locator.first.inner_text())
+            if text:
+                return text
+    body_text = collapse_whitespace(page.locator("body").inner_text())
+    for message in [
+        "Invalid Steam64 ID Provided",
+        "Player not found or error fetching data",
+        "Access Denied.",
+    ]:
+        if message in body_text:
+            return message
+    if "An unexpected error occurred." in body_text:
+        return "Error: An unexpected error occurred."
+    return ""
+
+
+def extract_atlas_profile(page):
+    script = """
+() => {
+  const textOf = (selector) => {
+    const node = document.querySelector(selector);
+    return node ? node.textContent.trim() : "";
+  };
+  const attrOf = (selector, attr) => {
+    const node = document.querySelector(selector);
+    return node ? (node.getAttribute(attr) || "") : "";
+  };
+  const parseMetricValue = (valueText) => {
+    if (!valueText) return null;
+    const normalized = valueText.trim();
+    if (!normalized) return null;
+    if (normalized.endsWith("%")) {
+      const numeric = Number(normalized.replace(/[^0-9.\\-]/g, ""));
+      return Number.isFinite(numeric) ? numeric : normalized;
+    }
+    const compact = normalized.toLowerCase();
+    const compactMatch = compact.match(/^([0-9]+(?:\\.[0-9]+)?)([km])(?:\\s+hours)?$/);
+    if (compactMatch) {
+      const base = Number(compactMatch[1]);
+      const factor = compactMatch[2] === "m" ? 1000000 : 1000;
+      return Number.isFinite(base) ? Math.round(base * factor) : normalized;
+    }
+    if (/^\\d+d\\s+\\d+h(?:\\s+\\d+m)?$/.test(normalized) || /^\\d+h(?:\\s+\\d+m)?$/.test(normalized)) {
+      return normalized;
+    }
+    const numeric = Number(normalized.replace(/,/g, ""));
+    return Number.isFinite(numeric) ? numeric : normalized;
+  };
+  const metrics = Array.from(document.querySelectorAll(".metric-item")).map((node) => {
+    const label = node.querySelector(".metric-label")?.textContent?.trim() || "";
+    const valueText = node.querySelector(".metric-value")?.textContent?.trim() || "";
+    const sub = node.querySelector(".metric-sub")?.textContent?.trim() || "";
+    return {
+      label,
+      value: parseMetricValue(valueText),
+      valueText,
+      sub,
+    };
+  });
+  const profileLinks = Array.from(document.querySelectorAll(".profile-link")).map((node) => ({
+    href: node.getAttribute("href") || "",
+    text: node.textContent.trim(),
+  }));
+  const bans = Array.from(document.querySelectorAll(".ban-list-item")).map((node) => ({
+    reason: node.querySelector(".ban-reason")?.textContent?.trim() || "",
+    summary: node.textContent.trim(),
+  }));
+  const clans = Array.from(document.querySelectorAll(".clan-list-item")).map((node) => ({
+    name: node.querySelector(".clan-name")?.textContent?.trim() || "",
+    details: node.querySelector(".clan-details")?.textContent?.trim() || "",
+    meta: node.querySelector(".clan-meta-row")?.textContent?.trim() || "",
+  }));
+  return {
+    name: textOf(".profile-name"),
+    avatar: attrOf(".profile-avatar img", "src"),
+    countryCode: attrOf(".country-flag", "alt"),
+    steamProfileUrl: attrOf(".profile-link[href^='https://steamcommunity.com/profiles/']", "href"),
+    battlemetricsUrl: attrOf(".profile-link[href*='battlemetrics.com/players/']", "href"),
+    statusChips: Array.from(document.querySelectorAll(".status-chip")).map((node) => node.textContent.trim()).filter(Boolean),
+    metaItems: Array.from(document.querySelectorAll(".profile-meta .meta-item")).map((node) => node.textContent.trim()).filter(Boolean),
+    metrics,
+    bans,
+    clans,
+  };
+}
+"""
+    return page.evaluate(script)
+
+
+def atlas_lookup_error_message(response_status, visible_error):
+    if visible_error:
+        return visible_error
+    if response_status == 405:
+        return "Access Denied."
+    if response_status == 404:
+        return "Player not found or error fetching data"
+    return "Atlas 页面未返回可用数据"
+
+
+def normalize_atlas_profile(steam_id, raw_profile, response_status=None, visible_error=""):
+    name = raw_profile.get("name") or ""
+    battlemetrics_url = raw_profile.get("battlemetricsUrl") or ""
+    bm_match = re.search(r"/players/(\d+)", battlemetrics_url)
+    steam_profile_url = raw_profile.get("steamProfileUrl") or ""
+    metrics = raw_profile.get("metrics") or []
+    metric_lookup = {
+        collapse_whitespace(item.get("label")).casefold(): item
+        for item in metrics
+        if item.get("label")
+    }
+    kd_metric = metric_lookup.get("k/d ratio")
+    atlas_metric = metric_lookup.get("atlas playtime")
+    bm_metric = metric_lookup.get("battlemetrics")
+    accuracy_metric = metric_lookup.get("accuracy")
+    has_profile = bool(name and steam_profile_url)
+    return {
+        "steamId": steam_id,
+        "query": {"steamId": steam_id},
+        "source": ATLAS_PLAYER_LOOKUP_URL,
+        "statusCode": response_status,
+        "found": has_profile,
+        "error": "" if has_profile else atlas_lookup_error_message(response_status, visible_error),
+        "identity": {
+            "steamId": steam_id,
+            "playerName": name or None,
+            "avatar": raw_profile.get("avatar") or None,
+            "countryCode": raw_profile.get("countryCode") or None,
+            "steamProfileUrl": steam_profile_url or None,
+            "battlemetricsUrl": battlemetrics_url or None,
+            "battlemetricsPlayerId": bm_match.group(1) if bm_match else None,
+            "statusChips": raw_profile.get("statusChips") or [],
+            "metaItems": raw_profile.get("metaItems") or [],
+        },
+        "highlights": {
+            "battlemetricsHours": bm_metric.get("value") if bm_metric else None,
+            "battlemetricsText": bm_metric.get("valueText") if bm_metric else "",
+            "atlasHours": atlas_metric.get("value") if atlas_metric else None,
+            "atlasText": atlas_metric.get("valueText") if atlas_metric else "",
+            "kdRatio": kd_metric.get("value") if kd_metric else None,
+            "kdText": kd_metric.get("valueText") if kd_metric else "",
+            "accuracy": accuracy_metric.get("value") if accuracy_metric else None,
+            "accuracyText": accuracy_metric.get("valueText") if accuracy_metric else "",
+            "accuracySubtext": accuracy_metric.get("sub") if accuracy_metric else "",
+        },
+        "metrics": metrics,
+        "bans": raw_profile.get("bans") or [],
+        "banCount": len(raw_profile.get("bans") or []),
+        "clans": raw_profile.get("clans") or [],
+    }
+
+
+def fetch_atlas_player_summary(steam_id):
+    normalized_steam_id = validate_atlas_steam_id(steam_id)
+
+    def builder():
+        with atlas_page_session() as page:
+            response_info = atlas_collect_response_info(page)
+            search_input = page.locator("input").first
+            search_input.wait_for(timeout=30000)
+            search_input.fill(normalized_steam_id)
+            page.get_by_role("button", name="Search").click()
+            page.wait_for_timeout(ATLAS_INTERACTION_DELAY_MS)
+
+            result_card = page.locator(".results-container")
+            if result_card.count():
+                try:
+                    result_card.first.wait_for(timeout=5000)
+                except PlaywrightTimeoutError:
+                    pass
+            visible_error = extract_atlas_error(page)
+            profile = extract_atlas_profile(page)
+            return normalize_atlas_profile(
+                normalized_steam_id,
+                profile,
+                response_status=response_info.get("status"),
+                visible_error=visible_error,
+            )
+
+    cache_key = f"atlas:player:{normalized_steam_id}"
+    return cached_compute(cache_key, ATLAS_CACHE_TTL, builder)
+
+
+def rusticated_get(path, params=None, ttl=RUSTICATED_CACHE_TTL):
+    payload = cached_get(f"{RUSTICATED_API_BASE}{path}", params={**(params or {}), "orgId": RUSTICATED_ORG_ID}, ttl=ttl)
+    if isinstance(payload, dict) and payload.get("success") is False:
+        raise RuntimeError(payload.get("error") or "Rusticated API 返回失败")
+    return payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+
+
+def fetch_rusticated_servers():
+    servers = rusticated_get("/v2/servers", ttl=RUSTICATED_META_TTL) or []
+    return sorted(servers, key=lambda item: (item.get("spot") or 9999, str(item.get("name", "")).casefold()))
+
+
+def fetch_rusticated_stat_groups():
+    groups = rusticated_get("/v3/leaderboard/stat-groups", params={}, ttl=RUSTICATED_META_TTL) or []
+    return sorted(groups, key=lambda item: (item.get("sortOrder") if item.get("sortOrder") is not None else 9999, str(item.get("name", "")).casefold()))
+
+
+def fetch_rusticated_wipes():
+    wipes = rusticated_get("/v3/server-wipes", params={}, ttl=RUSTICATED_META_TTL) or []
+    return sorted(
+        wipes,
+        key=lambda item: (
+            str(item.get("serverId", "")).casefold(),
+            item.get("startedAt") or "",
+        ),
+        reverse=True,
+    )
+
+
+def rusticated_field_kind(field_id):
+    if field_id == "playtime":
+        return "duration"
+    if field_id == "kdr":
+        return "ratio"
+    return "number"
+
+
+def serialize_rusticated_field(stat_type):
+    return {
+        "id": stat_type.get("id"),
+        "name": collapse_whitespace(stat_type.get("name")),
+        "group": stat_type.get("group"),
+        "sortOrder": stat_type.get("sortOrder"),
+        "kind": rusticated_field_kind(stat_type.get("id")),
+    }
+
+
+def serialize_rusticated_group(group):
+    stat_types = sorted(
+        group.get("statTypes", []) or [],
+        key=lambda item: (
+            item.get("sortOrder") if item.get("sortOrder") is not None else 9999,
+            str(item.get("name", "")).casefold(),
+        ),
+    )
+    return {
+        "id": group.get("id"),
+        "name": group.get("name"),
+        "sortOrder": group.get("sortOrder"),
+        "fields": [serialize_rusticated_field(item) for item in stat_types],
+        "defaultSort": stat_types[0].get("id") if stat_types else "",
+    }
+
+
+def serialize_rusticated_server(server):
+    population = server.get("population") or {}
+    last_events = server.get("lastEvents") or {}
+    map_info = server.get("map") or {}
+    return {
+        "id": server.get("id"),
+        "name": server.get("name"),
+        "title": server.get("title"),
+        "host": server.get("host"),
+        "port": server.get("port"),
+        "online": bool(server.get("online")),
+        "timezone": server.get("timezone"),
+        "maxTeamSize": server.get("maxTeamSize"),
+        "nextWipe": server.get("nextWipe"),
+        "nextForcedWipe": server.get("nextForcedWipe"),
+        "currentWipeStartedAt": last_events.get("wipe"),
+        "population": {
+            "players": population.get("players", 0),
+            "maxPlayers": population.get("maxPlayers", 0),
+            "queued": population.get("queued", 0),
+            "joining": population.get("joining", 0),
+        },
+        "map": {
+            "name": map_info.get("name"),
+            "worldSize": map_info.get("worldSize"),
+            "seed": map_info.get("seed"),
+        },
+    }
+
+
+def serialize_rusticated_wipe(wipe):
+    return {
+        "id": wipe.get("id"),
+        "serverId": wipe.get("serverId"),
+        "startedAt": wipe.get("startedAt"),
+        "endedAt": wipe.get("endedAt"),
+        "mapId": wipe.get("mapId"),
+        "mapSize": wipe.get("mapSize"),
+        "mapImageUrl": wipe.get("mapImageUrl"),
+        "mapRustMapsId": wipe.get("mapRustMapsId"),
+        "mapRustMapsUrl": wipe.get("mapRustMapsUrl"),
+    }
+
+
+def find_rusticated_server(server_id):
+    lookup = collapse_whitespace(server_id).casefold()
+    for server in fetch_rusticated_servers():
+        if str(server.get("id", "")).casefold() == lookup or str(server.get("name", "")).casefold() == lookup:
+            return server
+    raise KeyError("找不到该 Rusticated 服务器")
+
+
+def find_rusticated_group(group_id):
+    lookup = collapse_whitespace(group_id).casefold()
+    for group in fetch_rusticated_stat_groups():
+        if str(group.get("id", "")).casefold() == lookup or str(group.get("name", "")).casefold() == lookup:
+            return group
+    raise KeyError("找不到该 Rusticated 统计类型")
+
+
+def list_rusticated_server_wipes(server_id):
+    if not server_id:
+        return []
+    server = find_rusticated_server(server_id)
+    return [
+        wipe
+        for wipe in fetch_rusticated_wipes()
+        if str(wipe.get("serverId", "")).casefold() == str(server.get("id", "")).casefold()
+    ]
+
+
+def resolve_rusticated_wipe(server_id, wipe_id=None):
+    wipes = list_rusticated_server_wipes(server_id)
+    if not wipes:
+        return None
+    if wipe_id in {None, "", 0, "0"}:
+        return wipes[0]
+    for wipe in wipes:
+        if str(wipe.get("id")) == str(wipe_id):
+            return wipe
+    raise KeyError("找不到该 Rusticated wipe")
+
+
+def fetch_rusticated_server_detail(server_id):
+    server = find_rusticated_server(server_id)
+    wipes = list_rusticated_server_wipes(server_id)
+    groups = [serialize_rusticated_group(group) for group in fetch_rusticated_stat_groups()]
+    return {
+        "server": serialize_rusticated_server(server),
+        "wipes": [serialize_rusticated_wipe(wipe) for wipe in wipes],
+        "defaultWipeId": wipes[0].get("id") if wipes else None,
+        "groups": groups,
+    }
+
+
+def fetch_rusticated_leaderboard(server_id="", wipe_id=None, group_id="pvp", sort_by="", sort_dir="desc", entry_type="player", filter_value="", offset=0, limit=10, hidden=False, event_type=""):
+    group = find_rusticated_group(group_id)
+    stat_types = group.get("statTypes", []) or []
+    default_sort = stat_types[0].get("id") if stat_types else ""
+    server = find_rusticated_server(server_id) if server_id else None
+    wipe = resolve_rusticated_wipe(server_id, wipe_id) if server_id else None
+    normalized_sort = sort_by or default_sort
+    params = {
+        "hidden": "true" if hidden else "false",
+        "limit": max(1, int(limit)),
+        "offset": max(0, int(offset)),
+        "group": group.get("id"),
+        "sortBy": normalized_sort,
+        "sortDir": "asc" if str(sort_dir).lower() == "asc" else "desc",
+        "type": entry_type or "player",
+        "eventType": event_type or normalized_sort or default_sort,
+        "filter": filter_value or "",
+    }
+    if server:
+        params["serverId"] = server.get("id")
+    if wipe:
+        params["serverWipeId"] = wipe.get("id")
+
+    payload = rusticated_get("/v3/leaderboard", params=params, ttl=RUSTICATED_CACHE_TTL) or {}
+    serialized_group = serialize_rusticated_group(group)
+    return {
+        "server": serialize_rusticated_server(server) if server else None,
+        "wipe": serialize_rusticated_wipe(wipe) if wipe else None,
+        "group": serialized_group,
+        "fields": serialized_group["fields"],
+        "rows": payload.get("entries", []) or [],
+        "total": payload.get("total", 0),
+        "userEntry": payload.get("userEntry"),
+        "query": {
+            "serverId": server.get("id") if server else "",
+            "serverWipeId": wipe.get("id") if wipe else 0,
+            "groupId": group.get("id"),
+            "sortBy": normalized_sort,
+            "sortDir": params["sortDir"],
+            "type": params["type"],
+            "eventType": params["eventType"],
+            "filter": params["filter"],
+            "offset": params["offset"],
+            "limit": params["limit"],
+        },
+    }
+
+
+def fetch_rusticated_player_summary(server_id, username, wipe_id=None):
+    server = find_rusticated_server(server_id)
+    wipe = resolve_rusticated_wipe(server_id, wipe_id)
+    groups = [serialize_rusticated_group(group) for group in fetch_rusticated_stat_groups()]
+    normalized_username = collapse_whitespace(username)
+    if not normalized_username:
+        raise ValueError("请提供玩家名称")
+
+    results = []
+    identity = None
+    username_cf = normalized_username.casefold()
+
+    for group in groups:
+        payload = fetch_rusticated_leaderboard(
+            server_id=server.get("id"),
+            wipe_id=wipe.get("id") if wipe else None,
+            group_id=group["id"],
+            sort_by=group["defaultSort"],
+            sort_dir="desc",
+            entry_type="player",
+            filter_value=normalized_username,
+            offset=0,
+            limit=10,
+        )
+        rows = payload.get("rows", [])
+        exact_matches = [row for row in rows if str(row.get("username", "")).casefold() == username_cf]
+        selected_match = max(exact_matches, key=rusticated_match_score) if exact_matches else (rows[0] if rows else None)
+        results.append({
+            "group": group,
+            "fields": group["fields"],
+            "matchCount": len(rows),
+            "exactMatchCount": len(exact_matches),
+            "selectedMatch": selected_match,
+            "matches": rows[:5],
+        })
+        if selected_match and not identity:
+            identity = {
+                "steamId": selected_match.get("steamId"),
+                "username": selected_match.get("username"),
+                "avatarUrl": selected_match.get("avatarUrl"),
+            }
+
+    return {
+        "server": serialize_rusticated_server(server),
+        "wipe": serialize_rusticated_wipe(wipe) if wipe else None,
+        "identity": identity,
+        "groups": results,
+        "matchedGroups": sum(1 for item in results if item.get("selectedMatch")),
+    }
+
+
+def rusticated_match_score(row):
+    stats = row.get("stats") or {}
+    score = 0.0
+    for value in stats.values():
+        numeric = numeric_value(value)
+        if numeric is not None:
+            score += max(0.0, numeric)
+    return score
+
+
 # ══════════════════════════════════════════════════════════
 #  路由
 # ══════════════════════════════════════════════════════════
@@ -1902,6 +3681,394 @@ def api_servers(player_ref):
         return jsonify(result)
     except ConfigurationError as e:
         return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/atlas/meta")
+def api_atlas_meta():
+    try:
+        return jsonify(fetch_atlas_meta())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/atlas/player-search")
+def api_atlas_player_search():
+    steam_id = request.args.get("steamId", "").strip()
+    if not steam_id:
+        return jsonify({"error": "请提供 Steam64 ID"}), 400
+    try:
+        payload = fetch_atlas_player_summary(steam_id)
+        if not payload.get("found"):
+            status_code = payload.get("statusCode")
+            if status_code == 405:
+                return jsonify(payload), 502
+            return jsonify(payload), 404
+        return jsonify(payload)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Atlas 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/survivors/servers")
+def api_survivors_servers():
+    try:
+        catalog = fetch_survivors_catalog()
+        return jsonify({
+            "source": catalog["source"],
+            "servers": catalog["servers"],
+            "categories": catalog["categories"],
+            "count": len(catalog["servers"]),
+        })
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Survivors 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/survivors/servers/<server_id>")
+def api_survivors_server_detail(server_id):
+    try:
+        return jsonify(fetch_survivors_server_detail(server_id))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Survivors 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/survivors/servers/<server_id>/leaderboards/<category_id>")
+def api_survivors_leaderboard(server_id, category_id):
+    period = request.args.get("period", "").strip()
+    search = request.args.get("search", "").strip()
+    page_value = request.args.get("page", "1").strip() or "1"
+    try:
+        return jsonify(
+            fetch_survivors_leaderboard(
+                server_id=server_id,
+                category_id=category_id,
+                period_value=period,
+                search=search,
+                page_number=int(page_value),
+            )
+        )
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError:
+        return jsonify({"error": "page 参数必须是整数"}), 400
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Survivors 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/survivors/player-search")
+def api_survivors_player_search():
+    server_id = request.args.get("serverId", "").strip()
+    username = request.args.get("username", "").strip()
+    period = request.args.get("period", "").strip()
+    if not server_id:
+        return jsonify({"error": "请提供 serverId"}), 400
+    if not username:
+        return jsonify({"error": "请提供玩家名称"}), 400
+    try:
+        return jsonify(fetch_survivors_player_summary(server_id, username, period))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Survivors 页面加载超时"}), 504
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/moose/servers")
+def api_moose_servers():
+    try:
+        catalog = fetch_moose_catalog()
+        return jsonify({
+            "source": catalog["source"],
+            "servers": catalog["servers"],
+            "categories": catalog["categories"],
+            "count": len(catalog["servers"]),
+        })
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Moose 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/moose/servers/<server_id>")
+def api_moose_server_detail(server_id):
+    try:
+        return jsonify(fetch_moose_server_detail(server_id))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Moose 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/moose/servers/<server_id>/leaderboards/<category_id>")
+def api_moose_leaderboard(server_id, category_id):
+    period = request.args.get("period", "").strip()
+    search = request.args.get("search", "").strip()
+    page_value = request.args.get("page", "1").strip() or "1"
+    try:
+        payload = fetch_moose_leaderboard(
+            server_id=server_id,
+            category_id=category_id,
+            period_value=period,
+            search=search,
+            page_number=int(page_value),
+        )
+        return jsonify(payload)
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError:
+        return jsonify({"error": "page 参数必须是整数"}), 400
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Moose 页面加载超时"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/moose/player-search")
+def api_moose_player_search():
+    server_id = request.args.get("serverId", "").strip()
+    username = request.args.get("username", "").strip()
+    period = request.args.get("period", "").strip()
+    if not server_id:
+        return jsonify({"error": "请提供 serverId"}), 400
+    if not username:
+        return jsonify({"error": "请提供玩家名称"}), 400
+    try:
+        return jsonify(fetch_moose_player_summary(server_id, username, period))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except PlaywrightTimeoutError:
+        return jsonify({"error": "Moose 页面加载超时"}), 504
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rusticated/servers")
+def api_rusticated_servers():
+    try:
+        servers = [serialize_rusticated_server(server) for server in fetch_rusticated_servers()]
+        groups = [serialize_rusticated_group(group) for group in fetch_rusticated_stat_groups()]
+        return jsonify({
+            "source": "https://rusticated.com/leaderboards",
+            "servers": servers,
+            "groups": groups,
+            "count": len(servers),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rusticated/servers/<server_id>")
+def api_rusticated_server_detail(server_id):
+    try:
+        return jsonify(fetch_rusticated_server_detail(server_id))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rusticated/servers/<server_id>/leaderboards/<group_id>")
+def api_rusticated_leaderboard(server_id, group_id):
+    wipe_id = request.args.get("wipeId", "").strip()
+    sort_by = request.args.get("sortBy", "").strip()
+    sort_dir = request.args.get("sortDir", "desc").strip()
+    entry_type = request.args.get("type", "player").strip()
+    filter_value = request.args.get("filter", "").strip()
+    offset = request.args.get("offset", "0").strip() or "0"
+    limit = request.args.get("limit", "10").strip() or "10"
+    event_type = request.args.get("eventType", "").strip()
+    try:
+        return jsonify(
+            fetch_rusticated_leaderboard(
+                server_id=server_id,
+                wipe_id=wipe_id,
+                group_id=group_id,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                entry_type=entry_type,
+                filter_value=filter_value,
+                offset=int(offset),
+                limit=int(limit),
+                event_type=event_type,
+            )
+        )
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError:
+        return jsonify({"error": "offset 和 limit 必须是整数"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rusticated/player-search")
+def api_rusticated_player_search():
+    server_id = request.args.get("serverId", "").strip()
+    username = request.args.get("username", "").strip()
+    wipe_id = request.args.get("wipeId", "").strip()
+    if not server_id:
+        return jsonify({"error": "请提供 serverId"}), 400
+    if not username:
+        return jsonify({"error": "请提供玩家名称"}), 400
+    try:
+        return jsonify(fetch_rusticated_player_summary(server_id, username, wipe_id))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rustoria/servers")
+def api_rustoria_servers():
+    try:
+        leaderboard_only = request.args.get("leaderboardOnly", "1").strip().lower() not in {"0", "false", "no"}
+        servers = fetch_rustoria_servers()
+        if leaderboard_only:
+            servers = [server for server in servers if server.get("leaderboardServer")]
+        return jsonify({
+            "servers": [serialize_rustoria_server(server) for server in servers],
+            "count": len(servers),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rustoria/servers/<server_id>")
+def api_rustoria_server_detail(server_id):
+    try:
+        server = fetch_rustoria_server_detail(server_id)
+        mappings = fetch_rustoria_statistic_mappings()
+        return jsonify({
+            "server": {
+                **serialize_rustoria_server(server),
+                "statistics": [
+                    serialize_rustoria_statistic(statistic, mappings)
+                    for statistic in sorted(server.get("statistics", []), key=lambda item: item.get("order") or 999)
+                ],
+            }
+        })
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return jsonify({"error": "找不到该 Rustoria 服务器"}), 404
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rustoria/servers/<server_id>/wipes")
+def api_rustoria_wipes(server_id):
+    try:
+        return jsonify({
+            "serverId": server_id,
+            "wipes": fetch_rustoria_wipes(server_id),
+        })
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return jsonify({"error": "找不到该 Rustoria 服务器"}), 404
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rustoria/servers/<server_id>/leaderboards/<statistic_id>")
+def api_rustoria_leaderboard(server_id, statistic_id):
+    try:
+        server_detail = fetch_rustoria_server_detail(server_id)
+        mappings = fetch_rustoria_statistic_mappings()
+        statistic = find_rustoria_statistic(server_detail, statistic_id)
+        if not statistic:
+            return jsonify({"error": "该服务器不支持此统计类型"}), 404
+
+        from_value = request.args.get("from", "0").strip() or "0"
+        sort_by = request.args.get("sortBy", "").strip() or statistic.get("default_sort") or "total"
+        order_by = request.args.get("orderBy", "desc").strip().lower()
+        username = request.args.get("username", "").strip()
+        wipe = request.args.get("wipe", "").strip()
+
+        leaderboard = fetch_rustoria_leaderboard(
+            server_id=server_id,
+            statistic_id=statistic_id,
+            from_value=int(from_value),
+            sort_by=sort_by,
+            order_by=order_by,
+            username=username,
+            wipe=wipe,
+        )
+        totals = fetch_rustoria_leaderboard_totals(server_id, statistic_id, wipe)
+        rows = leaderboard.get("leaderboard", []) or []
+        field_ids = build_rustoria_field_ids(statistic, totals=totals, leaderboard_rows=rows)
+        statistic_payload = serialize_rustoria_statistic(statistic, mappings, field_ids)
+
+        serialized_rows = []
+        offset = max(0, int(from_value))
+        for index, row in enumerate(rows):
+            serialized_rows.append({
+                **row,
+                "rank": offset + index + 1,
+            })
+
+        return jsonify({
+            "server": serialize_rustoria_server(server_detail),
+            "statistic": statistic_payload,
+            "fields": statistic_payload["fields"],
+            "rows": serialized_rows,
+            "totals": totals,
+            "totalItems": leaderboard.get("totalItems", 0),
+            "query": {
+                "serverId": server_id,
+                "statisticId": statistic_id,
+                "from": offset,
+                "sortBy": sort_by,
+                "orderBy": "asc" if order_by == "asc" else "desc",
+                "username": username,
+                "wipe": wipe,
+            },
+        })
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return jsonify({"error": "找不到该 Rustoria 数据"}), 404
+        return jsonify({"error": str(e)}), 502
+    except ValueError:
+        return jsonify({"error": "from 参数必须是整数"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rustoria/player-search")
+def api_rustoria_player_search():
+    server_id = request.args.get("serverId", "").strip()
+    username = request.args.get("username", "").strip()
+    wipe = request.args.get("wipe", "").strip()
+    if not server_id:
+        return jsonify({"error": "请提供 serverId"}), 400
+    if not username:
+        return jsonify({"error": "请提供玩家名称"}), 400
+    try:
+        return jsonify(fetch_rustoria_player_summary(server_id, username, wipe))
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return jsonify({"error": "找不到该 Rustoria 数据"}), 404
+        return jsonify({"error": str(e)}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
